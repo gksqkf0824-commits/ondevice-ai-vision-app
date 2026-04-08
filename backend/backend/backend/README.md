@@ -1,7 +1,8 @@
 # 보면앎 Backend 진행 상황 정리
 
 > 작성일: 2026-04-07
-> 담당: 백엔드 (김장섭)
+>       2026-04-08
+> 담당: 백엔드 (김장섭, 박채은)
 
 ---
 
@@ -21,6 +22,7 @@
 - JPA `@Inheritance(strategy = JOINED)` 방식 적용
 - 개인 회원가입 API: `POST /api/user/signup/personal`
 - 기업 회원가입 API: `POST /api/user/signup/company`
+- `Record`에 `userId` 연관관계 추가
 
 ### 3. 로그인 + JWT 인증 구현
 
@@ -28,6 +30,7 @@
 - **JWT 토큰 발급** 구현 (로그인 성공 시 토큰 반환)
 - 로그인 API: `POST /api/user/login`
 - 토큰 유효시간: 24시간 (86400000ms)
+- 사용자별 기록 조회 API (`GET /api/records/my`)
 
 ### 4. Spring Security 설정
 
@@ -103,8 +106,6 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiJ9...
 
 ### 우선순위 높음
 
-- [ ] `Record`에 `userId` 연관관계 추가 (현재 누구의 기록인지 구분 불가)
-- [ ] 사용자별 기록 조회 API (`GET /api/records/my`)
 - [ ] 안드로이드 팀과 AI 인식 결과 연동 (현재 "테스트 결과입니다" 하드코딩)
 
 ### 우선순위 중간
