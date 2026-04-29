@@ -10,6 +10,7 @@ import android.view.HapticFeedbackConstants
 import android.view.View
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
@@ -18,12 +19,10 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import com.example.ondevice.databinding.ActivityCameraBinding
-import com.google.mediapipe.framework.image.BitmapImageBuilder
-import com.google.mediapipe.tasks.core.BaseOptions
-import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetector
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import org.tensorflow.lite.Interpreter
+import java.io.FileInputStream
+import java.nio.MappedByteBuffer
+import java.nio.channels.FileChannel
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -34,20 +33,19 @@ class CameraActivity : AppCompatActivity() {
     private lateinit var cameraExecutor: ExecutorService
     private var tts: android.speech.tts.TextToSpeech? = null
 
-    // AI 관련 변수들
-    private lateinit var objectDetector: ObjectDetector
-    private var latestBitmap: Bitmap? = null // 카메라가 보고 있는 가장 최근 장면을 저장할 변수
+    private lateinit var tflite: Interpreter
+    private var latestBitmap: Bitmap? = null
 
-    // 카메라 권한 요청
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean ->
+    ) { isGranted ->
         if (isGranted) startCamera() else finish()
     }
 
-    // 갤러리 열기 도구
-    private val pickMedia = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri!= null) {
+    private val pickMedia = registerForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
             binding.viewFinder.visibility = View.GONE
             binding.ivSelectedImage.visibility = View.VISIBLE
             binding.ivSelectedImage.setImageURI(uri)
@@ -57,98 +55,91 @@ class CameraActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         binding = ActivityCameraBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
         cameraExecutor = Executors.newSingleThreadExecutor()
 
-        // 1. TTS 초기화
         tts = android.speech.tts.TextToSpeech(this) { status ->
             if (status == android.speech.tts.TextToSpeech.SUCCESS) {
                 tts?.language = Locale.KOREAN
             }
         }
 
-        // 2. 💡 MediaPipe AI 객체 인식기(ObjectDetector) 초기화
-        val baseOptions = BaseOptions.builder().setModelAssetPath("efficientdet.tflite").build()
-        val options = ObjectDetector.ObjectDetectorOptions.builder()
-            .setBaseOptions(baseOptions)
-            .setMaxResults(1) // 가장 확률이 높은 물체 1개만 찾기
-            .build()
-        objectDetector = ObjectDetector.createFromOptions(this, options)
+        // YOLO TFLite 모델 로딩
+        tflite = Interpreter(loadModelFile("yolov11n_bus_door.tflite"))
 
-        // 버튼 로직들
-        binding.btnBack.setOnClickListener { handleBackAction() }
+        val inputShape = tflite.getInputTensor(0).shape().contentToString()
+        val outputShape = tflite.getOutputTensor(0).shape().contentToString()
+
+        android.util.Log.d("YOLO_SHAPE", "inputShape=$inputShape")
+        android.util.Log.d("YOLO_SHAPE", "outputShape=$outputShape")
+
+        binding.btnBack.setOnClickListener {
+            handleBackAction()
+        }
+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() { handleBackAction() }
+            override fun handleOnBackPressed() {
+                handleBackAction()
+            }
         })
 
         binding.btnAttachImage.setOnClickListener {
             it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            pickMedia.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-        }
-        if (intent.getBooleanExtra("OPEN_GALLERY", false)) {
-            pickMedia.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            pickMedia.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            )
         }
 
-        // 3. 💡 스캔 버튼 클릭 시 진짜 AI 추론 실행
+        if (intent.getBooleanExtra("OPEN_GALLERY", false)) {
+            pickMedia.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            )
+        }
+
         binding.btnScan.setOnClickListener { view ->
             view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
 
             latestBitmap?.let { bitmap ->
-                // 안드로이드 이미지를 MediaPipe용 이미지로 변환
-                val mpImage = BitmapImageBuilder(bitmap).build()
-                // AI 모델에게 사진을 주고 무엇인지 맞추라고 명령
-                val results = objectDetector.detect(mpImage)
+                val start = System.nanoTime()
 
-                // 결과가 있다면 (물체를 하나라도 찾았다면)
-                if (results.detections().isNotEmpty()) {
-                    // 💡.first()를 추가하여 여러 물체 중 첫 번째(1순위) 물체를 꺼냅니다.
-                    val topDetection = results.detections().first()
+                val resizedBitmap = Bitmap.createScaledBitmap(bitmap, 640, 640, true)
 
-                    // 그 물체의 정답 후보들 중 첫 번째(1순위) 이름과 확률을 가져옵니다.
-                    val category = topDetection.categories().first().categoryName()
-                    val score = (topDetection.categories().first().score() * 100).toInt()
+                // TODO 1: resizedBitmap을 YOLO 입력 Tensor로 변환
+                // TODO 2: tflite.run(input, output)
+                // TODO 3: output 후처리해서 bus / door bbox 추출
 
-                    val resultText = "${category}\n($score%)"
-                    val descText = "인식된 대상은 '$category' 입니다. AI의 확신도는 $score% 입니다."
+                val end = System.nanoTime()
+                val elapsedMs = (end - start) / 1_000_000.0
+                val fps = 1000.0 / elapsedMs
 
-                    // 화면 업데이트
-                    binding.tvBoxText.text = resultText
-                    binding.tvResultDesc.text = descText
+                binding.tvBoxText.text = "YOLO 모델 연결 준비 완료"
+                binding.tvResultDesc.text =
+                    "처리시간: ${"%.2f".format(elapsedMs)}ms / FPS: ${"%.2f".format(fps)}"
 
-                    // Room DB에 이 기록을 영구 저장
-                    val sharedPref = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
-                    val userId = sharedPref.getString("USER_ID", "알 수 없음")?: "알 수 없음"
+                binding.btnScan.visibility = View.GONE
+                binding.btnAttachImage.visibility = View.GONE
+                binding.layoutResult.visibility = View.VISIBLE
 
-                    CoroutineScope(Dispatchers.IO).launch {
-                        val db = AppDatabase.getDatabase(this@CameraActivity)
-                        db.historyDao().insertHistory(History(userName = userId, objectName = category, description = descText))
-                    }
+                speakOut("YOLO 모델 연결 준비가 완료되었습니다.")
 
-                    // 결과창 띄우고 음성으로 읽어주기
-                    binding.btnScan.visibility = View.GONE
-                    binding.btnAttachImage.visibility = View.GONE
-                    binding.layoutResult.visibility = View.VISIBLE
-
-                    speakOut("$category 가 인식되었습니다. 상세 정보를 들으려면 화면 아래의 음성 안내 듣기 버튼을 누르세요.")
-                } else {
-                    Toast.makeText(this, "인식된 객체가 없습니다. 다른 각도로 시도해주세요.", Toast.LENGTH_SHORT).show()
-                    speakOut("인식된 객체가 없습니다. 다른 각도로 시도해주세요.")
-                }
-            }?: run {
+            } ?: run {
                 Toast.makeText(this, "카메라를 준비 중입니다.", Toast.LENGTH_SHORT).show()
             }
         }
 
-        // 음성 안내 버튼
         binding.btnPlayTTS.setOnClickListener { view ->
             view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             speakOut(binding.tvResultDesc.text.toString())
         }
 
-        // 권한 확인
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+        if (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
             startCamera()
         } else {
             requestPermissionLauncher.launch(Manifest.permission.CAMERA)
@@ -189,12 +180,22 @@ class CameraActivity : AppCompatActivity() {
                 .build()
                 .also {
                     it.setAnalyzer(cameraExecutor) { imageProxy ->
-                        // 💡 AI가 분석하기 좋게 카메라 프레임을 비트맵(사진)으로 실시간 변환해서 저장해 둡니다.
                         val bitmap = imageProxy.toBitmap()
-                        val matrix = Matrix().apply { postRotate(imageProxy.imageInfo.rotationDegrees.toFloat()) }
-                        latestBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                        val matrix = Matrix().apply {
+                            postRotate(imageProxy.imageInfo.rotationDegrees.toFloat())
+                        }
 
-                        imageProxy.close() // 메모리 누수 방지
+                        latestBitmap = Bitmap.createBitmap(
+                            bitmap,
+                            0,
+                            0,
+                            bitmap.width,
+                            bitmap.height,
+                            matrix,
+                            true
+                        )
+
+                        imageProxy.close()
                     }
                 }
 
@@ -202,11 +203,29 @@ class CameraActivity : AppCompatActivity() {
 
             try {
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageAnalyzer)
-            } catch(exc: Exception) {
+                cameraProvider.bindToLifecycle(
+                    this,
+                    cameraSelector,
+                    preview,
+                    imageAnalyzer
+                )
+            } catch (exc: Exception) {
                 Toast.makeText(this, "카메라 초기화 실패", Toast.LENGTH_SHORT).show()
             }
+
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun loadModelFile(modelName: String): MappedByteBuffer {
+        val fileDescriptor = assets.openFd(modelName)
+        val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
+        val fileChannel = inputStream.channel
+
+        return fileChannel.map(
+            FileChannel.MapMode.READ_ONLY,
+            fileDescriptor.startOffset,
+            fileDescriptor.declaredLength
+        )
     }
 
     override fun onDestroy() {
@@ -214,6 +233,6 @@ class CameraActivity : AppCompatActivity() {
         cameraExecutor.shutdown()
         tts?.stop()
         tts?.shutdown()
-        objectDetector.close() // AI 모델 메모리 해제
+        tflite.close()
     }
 }

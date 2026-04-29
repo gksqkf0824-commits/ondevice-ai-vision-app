@@ -56,7 +56,6 @@ dependencies {
     implementation("androidx.camera:camera-camera2:${camerax_version}")
     implementation("androidx.camera:camera-lifecycle:${camerax_version}")
     implementation("androidx.camera:camera-view:${camerax_version}")
-    implementation("com.google.mediapipe:tasks-vision:latest.release")
     // Room DB (로컬 데이터베이스)
     val room_version = "2.6.1"
     implementation("androidx.room:room-runtime:$room_version")
@@ -66,6 +65,8 @@ dependencies {
     // WorkManager (오프라인 큐 역할)
     val work_version = "2.11.2"
     implementation("androidx.work:work-runtime-ktx:$work_version")
-    // Google MediaPipe AI Vision 라이브러리
-    implementation("com.google.mediapipe:tasks-vision:0.10.26")
+    //TensorFlow Lite+OCR 
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
+    implementation("com.google.mlkit:text-recognition-korean:16.0.1")
 }
