@@ -5,8 +5,9 @@ import androidx.room.PrimaryKey
 
 @Entity(tableName = "user_table")
 data class User(
-    @PrimaryKey val userId: String, // 아이디를 기본키(중복 불가)로 사용
+    @PrimaryKey val userId: String,
     val name: String,
     val password: String,
-    val userType: String = "PERSONAL" // 개인인지 기관인지 구분
+    val userType: String = "PERSONAL", // PERSONAL, ORG, GUARDIAN
+    val guardianId: String? = null     // 연동된 보호자의 아이디
 )

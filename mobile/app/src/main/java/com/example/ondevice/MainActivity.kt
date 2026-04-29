@@ -15,41 +15,22 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // '카메라 인식' 버튼을 눌렀을 때
+        // 1. '카메라 인식' 버튼 -> 버스 번호 입력 화면(BusInputActivity)으로 이동
         binding.btnGoCamera.setOnClickListener { view ->
-            // 진동 피드백
             view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-
-            // CameraActivity로 화면 이동
-            val intent = Intent(this, CameraActivity::class.java)
-            startActivity(intent)
+            startActivity(Intent(this, BusInputActivity::class.java))
         }
 
-        // '이미지 첨부' 버튼을 눌렀을 때
-        binding.btnGoGallery.setOnClickListener { view ->
-            view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-
-            // CameraActivity로 이동하면서 "갤러리를 열어라"라는 신호(OPEN_GALLERY)를 같이 보냄
-            val intent = Intent(this, CameraActivity::class.java)
-            intent.putExtra("OPEN_GALLERY", true)
-            startActivity(intent)
-        }
-
-        // '인식 기록 확인' 버튼을 눌렀을 때
+        // 2. '기록 확인' 버튼 -> 인식 기록 화면(HistoryActivity)으로 이동
         binding.btnGoHistory.setOnClickListener { view ->
             view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-
-            // 💡 Toast 대신 HistoryActivity로 화면 이동!
-            val intent = Intent(this, HistoryActivity::class.java)
-            startActivity(intent)
+            startActivity(Intent(this, HistoryActivity::class.java))
         }
-        // (MainActivity.kt 내부)
-        binding.btnGoSettings.setOnClickListener { view ->
-            view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
 
-            // 💡 Toast 대신 SettingsActivity로 화면 이동!
-            val intent = android.content.Intent(this, SettingsActivity::class.java)
-            startActivity(intent)
+        // 3. '설정' 버튼 -> 설정 화면(SettingsActivity)으로 이동
+        binding.btnGoSettings.setOnClickListener { view ->
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            startActivity(Intent(this, SettingsActivity::class.java))
         }
     }
 }

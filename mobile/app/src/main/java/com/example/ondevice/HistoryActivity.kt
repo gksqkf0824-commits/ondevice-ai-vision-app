@@ -1,4 +1,4 @@
-package com.example.ondevice
+package com.example.ondevice // 💡 본인의 실제 패키지명으로 꼭 변경하세요!
 
 import android.os.Bundle
 import android.text.Editable
@@ -15,10 +15,18 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.ondevice.databinding.ActivityHistoryBinding
+import com.github.mikephil.charting.components.XAxis
+import com.github.mikephil.charting.data.BarData
+import com.github.mikephil.charting.data.BarDataSet
+import com.github.mikephil.charting.data.BarEntry
+import com.github.mikephil.charting.formatter.IndexAxisValueFormatter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class HistoryActivity : AppCompatActivity() {
 
@@ -46,42 +54,98 @@ class HistoryActivity : AppCompatActivity() {
 
         binding.recyclerView.layoutManager = LinearLayoutManager(this)
 
-        // 💡 실시간 검색 기능 설정
         binding.etSearch.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                val query = s.toString()
-                if (query.isEmpty()) {
-                    loadHistoryData("") // 검색어가 없으면 전체 표시
-                } else {
-                    loadHistoryData(query) // 검색어가 있으면 DB에서 필터링
-                }
+                loadHistoryData(s.toString())
             }
             override fun afterTextChanged(s: Editable?) {}
         })
 
-        // 초기 데이터 로드 (전체 표시)
+        // 💡 하단 [리스트 <-> 그래프] 전환 버튼 로직
+        binding.btnToggleGraph.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            if (binding.recyclerView.visibility == View.VISIBLE) {
+                // 리스트 끄고 그래프 켜기
+                binding.recyclerView.visibility = View.GONE
+                binding.layoutSearch.visibility = View.GONE
+                binding.layoutGraph.visibility = View.VISIBLE
+                binding.tvTitle.text = "위험 객체 위치 로그"
+                binding.btnToggleGraph.text = "이용자 기록 확인으로 돌아가기"
+
+                setupBarChart() // 💡 DB 읽어서 차트 그리기 실행!
+            } else {
+                // 그래프 끄고 리스트 켜기
+                binding.recyclerView.visibility = View.VISIBLE
+                binding.layoutSearch.visibility = View.VISIBLE
+                binding.layoutGraph.visibility = View.GONE
+                binding.tvTitle.text = "이용자 기록 확인"
+                binding.btnToggleGraph.text = "위험 객체 위치 로그"
+            }
+        }
+
         loadHistoryData("")
+    }
+
+    // 💡 DB에서 데이터를 가져와서 통계를 내고 차트를 그리는 함수
+    private fun setupBarChart() {
+        CoroutineScope(Dispatchers.IO).launch {
+            val historyList = database.historyDao().getAllHistory()
+
+            // 객체 이름(예: 전동 킥보드, 버스 등)별로 그룹을 묶고 갯수를 셉니다.
+            val groupedData = historyList.groupBy { it.objectName }
+
+            val entries = ArrayList<BarEntry>()
+            val labels = ArrayList<String>()
+
+            var index = 0f
+            for ((name, items) in groupedData) {
+                entries.add(BarEntry(index, items.size.toFloat()))
+                labels.add(name)
+                index += 1f
+            }
+
+            val dataSet = BarDataSet(entries, "인식 횟수")
+            dataSet.color = android.graphics.Color.BLACK
+            dataSet.valueTextColor = android.graphics.Color.BLACK
+            dataSet.valueTextSize = 14f
+
+            val barData = BarData(dataSet)
+            barData.barWidth = 0.5f
+
+            withContext(Dispatchers.Main) {
+                binding.barChart.data = barData
+                // X축 글자를 사물 이름으로 설정
+                binding.barChart.xAxis.valueFormatter = IndexAxisValueFormatter(labels)
+                binding.barChart.xAxis.position = XAxis.XAxisPosition.BOTTOM
+                binding.barChart.xAxis.granularity = 1f
+                binding.barChart.xAxis.setDrawGridLines(false)
+
+                // 불필요한 차트 요소 숨기기
+                binding.barChart.axisLeft.granularity = 1f
+                binding.barChart.axisRight.isEnabled = false
+                binding.barChart.description.isEnabled = false
+
+                // 차트 새로고침 및 예쁜 솟아오르는 애니메이션 적용
+                binding.barChart.invalidate()
+                binding.barChart.animateY(1000)
+            }
+        }
     }
 
     private fun loadHistoryData(searchQuery: String) {
         CoroutineScope(Dispatchers.IO).launch {
             val dao = database.historyDao()
 
-            // (테스트용) DB가 비어있으면 가짜 데이터를 넣습니다.
+            // 초기 가짜 데이터 삽입 (테스트용)
             if (dao.getAllHistory().isEmpty()) {
-                dao.insertHistory(History(userName = "기관 이용자1", objectName = "서울 우유", description = "인식한 대상은 '서울 우유' 입니다. 소비 기한은 3월 27일 04:00 까지 입니다."))
-                dao.insertHistory(History(userName = "기관 이용자2", objectName = "북해도 우유 푸딩", description = "인식한 대상은 '북해도 우유 푸딩' 입니다. 소비 기한은 3월 27일 04:00 까지 입니다."))
-                dao.insertHistory(History(userName = "기관 이용자1", objectName = "나메라카 푸딩", description = "인식한 대상은 '나메라카 푸딩' 입니다. 영양 정보에 대해서는..."))
-                dao.insertHistory(History(userName = "사용자1", objectName = "소화가 잘 되는 우유", description = "인식한 대상은 '소화가 잘되는 우유' 입니다. 소비 기한은 3월 27일 04:00 까지 입니다."))
+                dao.insertHistory(History(userName = "사용자1", objectName = "전동 킥보드", latitude = 37.566, longitude = 126.970))
+                dao.insertHistory(History(userName = "사용자3", objectName = "자동차", latitude = 37.566, longitude = 126.978))
+                dao.insertHistory(History(userName = "사용자2", objectName = "자전거", latitude = 37.567, longitude = 126.971))
+                dao.insertHistory(History(userName = "사용자2", objectName = "손수레", latitude = 37.568, longitude = 126.975))
             }
 
-            // 검색어가 있으면 searchHistory, 없으면 getAllHistory 실행
-            val historyList = if (searchQuery.isEmpty()) {
-                dao.getAllHistory()
-            } else {
-                dao.searchHistory(searchQuery)
-            }
+            val historyList = if (searchQuery.isEmpty()) dao.getAllHistory() else dao.searchHistory(searchQuery)
 
             withContext(Dispatchers.Main) {
                 binding.recyclerView.adapter = HistoryAdapter(historyList)
@@ -107,17 +171,19 @@ class HistoryAdapter(private val historyList: List<History>) : RecyclerView.Adap
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val item = historyList[position]
 
-        // 피그마 디자인 반영: "사용자명 | 사물이름" 형태로 표시
         val titleText = "${item.userName} | ${item.objectName}"
         holder.tvObjectName.text = titleText
-        holder.tvDescription.text = item.description
 
-        // 💡 [접근성 그룹화 핵심] 리스트 한 칸을 포커스 했을 때, 제목과 내용을 한 문장처럼 이어서 자연스럽게 읽어주도록 세팅
-        holder.itemRoot.contentDescription = "$titleText. ${item.description}"
+        val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+        val formattedTime = timeFormat.format(Date(item.timestamp))
+        val locationText = "시간: $formattedTime, 위치: ${String.format("%.3f", item.latitude)}° N, ${String.format("%.3f", item.longitude)}° E"
+
+        holder.tvDescription.text = locationText
+        holder.itemRoot.contentDescription = "$titleText. $locationText"
 
         holder.btnTts.setOnClickListener {
             it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            Toast.makeText(it.context, "${item.objectName} 음성 안내 시작", Toast.LENGTH_SHORT).show()
+            Toast.makeText(it.context, "${item.objectName} 시간 및 위치 안내 시작", Toast.LENGTH_SHORT).show()
         }
     }
 

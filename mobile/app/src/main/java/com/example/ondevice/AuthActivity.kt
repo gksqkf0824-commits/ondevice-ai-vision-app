@@ -14,20 +14,21 @@ class AuthActivity : AppCompatActivity() {
         binding = ActivityAuthBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // 1. '로그인' 버튼 클릭 시
-        binding.btnLoginSelection.setOnClickListener {
-            it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            startActivity(Intent(this, LoginActivity::class.java))
-        }
+        // 💡 로그인 버튼별로 꼬리표(LOGIN_TYPE)를 달아서 보냅니다.
+        binding.btnLoginPersonal.setOnClickListener { navigateToLogin("PERSONAL") }
+        binding.btnLoginOrg.setOnClickListener { navigateToLogin("ORG") }
+        binding.btnLoginGuardian.setOnClickListener { navigateToLogin("GUARDIAN") }
 
-        // 2. '개인 이용자 회원가입' 버튼 클릭 시
-        binding.btnSignupPersonal.setOnClickListener {
+        binding.tvGoSignup.setOnClickListener {
             it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             startActivity(Intent(this, SignupActivity::class.java))
         }
+    }
 
-        // 3. 나머지 기관 가입 버튼 (추후 구현을 위해 진동만)
-        binding.btnSignupNewOrg.setOnClickListener { it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
-        binding.btnSignupOrgUser.setOnClickListener { it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
+    private fun navigateToLogin(type: String) {
+        window.decorView.rootView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        val intent = Intent(this, LoginActivity::class.java)
+        intent.putExtra("LOGIN_TYPE", type) // 어떤 로그인인지 전달
+        startActivity(intent)
     }
 }

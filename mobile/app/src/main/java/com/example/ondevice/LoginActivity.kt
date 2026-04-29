@@ -1,4 +1,4 @@
-package com.example.ondevice
+package com.example.ondevice // 💡 본인의 실제 패키지명으로 꼭 변경하세요!
 
 import android.content.Context
 import android.content.Intent
@@ -23,27 +23,42 @@ class LoginActivity : AppCompatActivity() {
 
         database = AppDatabase.getDatabase(this)
 
+        // AuthActivity에서 넘겨준 꼬리표(개인/기관/보호자)를 받습니다.
+        val loginType = intent.getStringExtra("LOGIN_TYPE")?: "PERSONAL"
+
+        // 💡 꼬리표에 따라 화면 맨 위의 큰 제목을 피그마 디자인처럼 바꿔줍니다!
+        when (loginType) {
+            "PERSONAL" -> binding.tvLoginTitle.text = "개인 로그인"
+            "ORG" -> binding.tvLoginTitle.text = "기관 로그인"
+            "GUARDIAN" -> binding.tvLoginTitle.text = "보호자 로그인"
+        }
+
         binding.btnLoginConfirm.setOnClickListener {
             it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             val id = binding.etId.text.toString()
             val pw = binding.etPassword.text.toString()
 
-            // 💡 입력한 정보로 DB에서 유저 찾기
             CoroutineScope(Dispatchers.IO).launch {
                 val user = database.userDao().login(id, pw)
                 withContext(Dispatchers.Main) {
                     if (user!= null) {
-                        Toast.makeText(this@LoginActivity, "${user.name}님 환영합니다!", Toast.LENGTH_SHORT).show()
+                        // 가입된 계정 유형과 누른 로그인 버튼의 유형이 다르면 막아냄
+                        if (user.userType!= loginType) {
+                            Toast.makeText(this@LoginActivity, "가입된 계정 유형과 다릅니다.", Toast.LENGTH_SHORT).show()
+                            return@withContext
+                        }
 
-                        // 로그인 성공 시 내 정보를 스마트폰에 기억시킵니다.
+                        // 로그인 성공 시 기기에 내 정보 저장
                         val sharedPref = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
                         with(sharedPref.edit()) {
                             putString("USER_ID", user.userId)
                             putString("USER_NAME", user.name)
-                            putString("USER_TYPE", user.userType) // 개인(PERSONAL)인지 기관인지 구분
+                            putString("USER_TYPE", user.userType)
+                            putString("GUARDIAN_ID", user.guardianId)
                             apply()
                         }
 
+                        Toast.makeText(this@LoginActivity, "${user.name}님 환영합니다!", Toast.LENGTH_SHORT).show()
                         startActivity(Intent(this@LoginActivity, MainActivity::class.java))
                         finish()
                     } else {
