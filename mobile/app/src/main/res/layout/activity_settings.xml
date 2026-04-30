@@ -42,35 +42,56 @@
         <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="사용자명" android:textSize="18sp" android:textColor="#000000" android:textStyle="bold"/>
         <TextView android:id="@+id/tvNameValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="사용자1" android:textSize="18sp" android:textColor="#000000"/>
     </LinearLayout>
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="24dp">
         <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="전화 번호" android:textSize="18sp" android:textColor="#000000" android:textStyle="bold"/>
         <TextView android:id="@+id/tvPhoneValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="123-4567-8901" android:textSize="18sp" android:textColor="#000000"/>
     </LinearLayout>
 
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="보호자 정보 📝" android:textSize="14sp" android:textColor="#333333" android:layout_marginBottom="8dp"/>
     <View android:layout_width="match_parent" android:layout_height="2dp" android:background="#000000" android:layout_marginBottom="16dp"/>
 
-    <TextView
-        android:id="@+id/tvGuardianStatus"
+    <LinearLayout
+        android:id="@+id/layoutUnlinkedGuardian"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="보호자 정보가 없습니다"
-        android:textSize="16sp"
-        android:textColor="#000000"
+        android:orientation="vertical"
         android:gravity="center"
-        android:layout_marginBottom="16dp"/>
+        android:layout_marginBottom="16dp">
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="보호자 정보가 없습니다"
+            android:textSize="16sp"
+            android:textColor="#000000"
+            android:layout_marginBottom="16dp"/>
+        <Button
+            android:id="@+id/btnLinkGuardian"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#000000"
+            android:textColor="#FFEB3B"
+            android:text="보호자 연동"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:paddingHorizontal="32dp"/>
+    </LinearLayout>
 
-    <Button
-        android:id="@+id/btnLinkGuardian"
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:id="@+id/layoutLinkedGuardian"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:backgroundTint="#000000"
-        android:textColor="#FFEB3B"
-        android:text="보호자 연동"
-        android:textSize="18sp"
-        android:textStyle="bold"
-        android:paddingHorizontal="32dp"
-        android:layout_marginBottom="24dp"/>
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:layout_marginBottom="16dp">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="보호자명" android:textSize="18sp" android:textColor="#000000" android:textStyle="bold"/>
+            <TextView android:id="@+id/tvGuardianNameValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="-" android:textSize="18sp" android:textColor="#000000"/>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="보호자 번호" android:textSize="18sp" android:textColor="#000000" android:textStyle="bold"/>
+            <TextView android:id="@+id/tvGuardianPhoneValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="080-098-1004" android:textSize="18sp" android:textColor="#000000"/>
+        </LinearLayout>
+    </LinearLayout>
 
     <View android:layout_width="match_parent" android:layout_height="2dp" android:background="#000000" android:layout_marginBottom="16dp"/>
 

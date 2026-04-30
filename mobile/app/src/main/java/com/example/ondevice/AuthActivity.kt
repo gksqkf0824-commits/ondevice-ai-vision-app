@@ -14,7 +14,6 @@ class AuthActivity : AppCompatActivity() {
         binding = ActivityAuthBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // 💡 로그인 버튼별로 꼬리표(LOGIN_TYPE)를 달아서 보냅니다.
         binding.btnLoginPersonal.setOnClickListener { navigateToLogin("PERSONAL") }
         binding.btnLoginOrg.setOnClickListener { navigateToLogin("ORG") }
         binding.btnLoginGuardian.setOnClickListener { navigateToLogin("GUARDIAN") }

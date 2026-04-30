@@ -1,4 +1,4 @@
-package com.example.ondevice // 본인 패키지명으로 확인
+package com.example.ondevice
 
 import android.app.Activity
 import android.content.Intent

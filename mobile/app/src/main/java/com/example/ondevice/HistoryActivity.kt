@@ -1,5 +1,6 @@
-package com.example.ondevice // 💡 본인의 실제 패키지명으로 꼭 변경하세요!
+package com.example.ondevice
 
+import android.content.Context
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -62,20 +63,17 @@ class HistoryActivity : AppCompatActivity() {
             override fun afterTextChanged(s: Editable?) {}
         })
 
-        // 💡 하단 [리스트 <-> 그래프] 전환 버튼 로직
         binding.btnToggleGraph.setOnClickListener {
             it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             if (binding.recyclerView.visibility == View.VISIBLE) {
-                // 리스트 끄고 그래프 켜기
                 binding.recyclerView.visibility = View.GONE
                 binding.layoutSearch.visibility = View.GONE
                 binding.layoutGraph.visibility = View.VISIBLE
                 binding.tvTitle.text = "위험 객체 위치 로그"
                 binding.btnToggleGraph.text = "이용자 기록 확인으로 돌아가기"
 
-                setupBarChart() // 💡 DB 읽어서 차트 그리기 실행!
+                setupBarChart()
             } else {
-                // 그래프 끄고 리스트 켜기
                 binding.recyclerView.visibility = View.VISIBLE
                 binding.layoutSearch.visibility = View.VISIBLE
                 binding.layoutGraph.visibility = View.GONE
@@ -87,68 +85,113 @@ class HistoryActivity : AppCompatActivity() {
         loadHistoryData("")
     }
 
-    // 💡 DB에서 데이터를 가져와서 통계를 내고 차트를 그리는 함수
+    private suspend fun fetchFilteredHistory(searchQuery: String = ""): List<History> {
+        val dao = database.historyDao()
+        val sharedPref = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+        val userId = sharedPref.getString("USER_ID", "")?: ""
+        val userType = sharedPref.getString("USER_TYPE", "PERSONAL")
+
+        return if (userType == "GUARDIAN") {
+            if (searchQuery.isEmpty()) dao.getHistoryForGuardian(userId)
+            else dao.searchHistoryForGuardian(userId, searchQuery)
+        } else {
+            if (searchQuery.isEmpty()) dao.getHistoryForUser(userId)
+            else dao.searchHistoryForUser(userId, searchQuery)
+        }
+    }
+
+    // 💡 2. 위치별로 데이터를 묶어서 여러 개의 그래프를 찍어내는 핵심 로직
     private fun setupBarChart() {
         CoroutineScope(Dispatchers.IO).launch {
-            val historyList = database.historyDao().getAllHistory()
+            val historyList = fetchFilteredHistory("")
 
-            // 객체 이름(예: 전동 킥보드, 버스 등)별로 그룹을 묶고 갯수를 셉니다.
-            val groupedData = historyList.groupBy { it.objectName }
-
-            val entries = ArrayList<BarEntry>()
-            val labels = ArrayList<String>()
-
-            var index = 0f
-            for ((name, items) in groupedData) {
-                entries.add(BarEntry(index, items.size.toFloat()))
-                labels.add(name)
-                index += 1f
+            // 💡 위도와 경도를 소수점 둘째 자리(약 1km 반경) 단위로 문자열로 만들어 그룹화합니다.
+            val groupedByLocation = historyList.groupBy {
+                val latStr = String.format(Locale.US, "%.2f", it.latitude)
+                val lonStr = String.format(Locale.US, "%.2f", it.longitude)
+                "$latStr° N, $lonStr° E ±0.01"
             }
 
-            val dataSet = BarDataSet(entries, "인식 횟수")
-            dataSet.color = android.graphics.Color.BLACK
-            dataSet.valueTextColor = android.graphics.Color.BLACK
-            dataSet.valueTextSize = 14f
-
-            val barData = BarData(dataSet)
-            barData.barWidth = 0.5f
-
             withContext(Dispatchers.Main) {
-                binding.barChart.data = barData
-                // X축 글자를 사물 이름으로 설정
-                binding.barChart.xAxis.valueFormatter = IndexAxisValueFormatter(labels)
-                binding.barChart.xAxis.position = XAxis.XAxisPosition.BOTTOM
-                binding.barChart.xAxis.granularity = 1f
-                binding.barChart.xAxis.setDrawGridLines(false)
+                binding.chartContainer.removeAllViews() // 기존 그래프들 초기화
 
-                // 불필요한 차트 요소 숨기기
-                binding.barChart.axisLeft.granularity = 1f
-                binding.barChart.axisRight.isEnabled = false
-                binding.barChart.description.isEnabled = false
+                var groupIndex = 1
+                for ((locationGroup, items) in groupedByLocation) {
+                    // 💡 그룹 갯수만큼 item_chart.xml을 복사해서 화면에 추가합니다.
+                    val chartView = layoutInflater.inflate(R.layout.item_chart, binding.chartContainer, false)
+                    val tvLocationTitle = chartView.findViewById<TextView>(R.id.tvLocationTitle)
+                    val barChart = chartView.findViewById<com.github.mikephil.charting.charts.BarChart>(R.id.barChart)
 
-                // 차트 새로고침 및 예쁜 솟아오르는 애니메이션 적용
-                binding.barChart.invalidate()
-                binding.barChart.animateY(1000)
+                    tvLocationTitle.text = "$groupIndex. 위치 범위: $locationGroup"
+
+                    // 해당 위치 내에서 객체별 인식 횟수 카운트
+                    val objectCounts = items.groupingBy { it.objectName }.eachCount()
+                    val entries = ArrayList<BarEntry>()
+                    val labels = ArrayList<String>()
+
+                    var xIndex = 0f
+                    for ((objName, count) in objectCounts) {
+                        entries.add(BarEntry(xIndex, count.toFloat()))
+                        labels.add(objName)
+                        xIndex += 1f
+                    }
+
+                    val dataSet = BarDataSet(entries, "인식 횟수")
+                    dataSet.color = android.graphics.Color.BLACK
+                    dataSet.valueTextColor = android.graphics.Color.BLACK
+                    dataSet.valueTextSize = 14f
+
+                    val barData = BarData(dataSet)
+                    barData.barWidth = 0.5f
+
+                    barChart.data = barData
+                    barChart.xAxis.valueFormatter = IndexAxisValueFormatter(labels)
+                    barChart.xAxis.position = XAxis.XAxisPosition.BOTTOM
+                    barChart.xAxis.granularity = 1f
+                    barChart.xAxis.setDrawGridLines(false)
+
+                    barChart.axisLeft.granularity = 1f
+                    barChart.axisLeft.axisMinimum = 0f // y축이 항상 0부터 시작하도록 설정
+                    barChart.axisRight.isEnabled = false
+                    barChart.description.isEnabled = false
+                    barChart.legend.isEnabled = false // 피그마 디자인 반영: 범례 숨김
+
+                    barChart.invalidate()
+                    barChart.animateY(1000)
+
+                    binding.chartContainer.addView(chartView)
+                    groupIndex++
+                }
             }
         }
     }
 
     private fun loadHistoryData(searchQuery: String) {
         CoroutineScope(Dispatchers.IO).launch {
-            val dao = database.historyDao()
+            val historyList = fetchFilteredHistory(searchQuery)
 
-            // 초기 가짜 데이터 삽입 (테스트용)
-            if (dao.getAllHistory().isEmpty()) {
-                dao.insertHistory(History(userName = "사용자1", objectName = "전동 킥보드", latitude = 37.566, longitude = 126.970))
-                dao.insertHistory(History(userName = "사용자3", objectName = "자동차", latitude = 37.566, longitude = 126.978))
-                dao.insertHistory(History(userName = "사용자2", objectName = "자전거", latitude = 37.567, longitude = 126.971))
-                dao.insertHistory(History(userName = "사용자2", objectName = "손수레", latitude = 37.568, longitude = 126.975))
-            }
+            // 테스트를 위해 DB에 내 기록이 전혀 없을 때만 가짜 데이터를 위치별로 나누어 집어넣습니다.
+            if (historyList.isEmpty() && searchQuery.isEmpty()) {
+                val dao = database.historyDao()
+                val sharedPref = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+                val userId = sharedPref.getString("USER_ID", "사용자1")?: "사용자1"
 
-            val historyList = if (searchQuery.isEmpty()) dao.getAllHistory() else dao.searchHistory(searchQuery)
+                // 💡 위치가 서로 다른 가짜 데이터 생성 (소수점 둘째 자리가 다름)
+                dao.insertHistory(History(userName = userId, objectName = "전동 킥보드", latitude = 37.56, longitude = 126.97))
+                dao.insertHistory(History(userName = userId, objectName = "자동차", latitude = 37.56, longitude = 126.97))
+                dao.insertHistory(History(userName = userId, objectName = "자전거", latitude = 37.57, longitude = 126.98))
+                dao.insertHistory(History(userName = userId, objectName = "손수레", latitude = 37.57, longitude = 126.98))
+                dao.insertHistory(History(userName = userId, objectName = "전동 킥보드", latitude = 37.59, longitude = 126.97))
 
-            withContext(Dispatchers.Main) {
-                binding.recyclerView.adapter = HistoryAdapter(historyList)
+                // 데이터 넣고 다시 불러오기
+                val newList = fetchFilteredHistory("")
+                withContext(Dispatchers.Main) {
+                    binding.recyclerView.adapter = HistoryAdapter(newList)
+                }
+            } else {
+                withContext(Dispatchers.Main) {
+                    binding.recyclerView.adapter = HistoryAdapter(historyList)
+                }
             }
         }
     }
@@ -176,7 +219,7 @@ class HistoryAdapter(private val historyList: List<History>) : RecyclerView.Adap
 
         val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
         val formattedTime = timeFormat.format(Date(item.timestamp))
-        val locationText = "시간: $formattedTime, 위치: ${String.format("%.3f", item.latitude)}° N, ${String.format("%.3f", item.longitude)}° E"
+        val locationText = "시간: $formattedTime, 위치: ${String.format(Locale.US, "%.3f", item.latitude)}° N, ${String.format(Locale.US, "%.3f", item.longitude)}° E"
 
         holder.tvDescription.text = locationText
         holder.itemRoot.contentDescription = "$titleText. $locationText"

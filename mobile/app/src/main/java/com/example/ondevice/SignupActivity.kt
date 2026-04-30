@@ -1,4 +1,4 @@
-package com.example.ondevice // 💡 본인의 실제 패키지명으로 꼭 변경하세요!
+package com.example.ondevice
 
 import android.graphics.Color
 import android.os.Bundle
@@ -61,10 +61,21 @@ class SignupActivity : AppCompatActivity() {
                 if (existingUser!= null) {
                     withContext(Dispatchers.Main) { Toast.makeText(this@SignupActivity, "이미 존재하는 아이디입니다.", Toast.LENGTH_SHORT).show() }
                 } else {
-                    // DB 구조를 안 바꾸고 정보를 합쳐서 저장하는 트릭
-                    val savedName = if(selectedType == "PERSONAL") "개인사용자" else "[$orgName] $name"
+                    // 💡 수정된 부분: 이름에 기관명을 합치던 예전 꼼수를 지우고,
+                    // DB의 orgName 칸에 기관명을 정식으로 따로 분리해서 저장합니다!
+                    val finalOrgName = if (selectedType == "PERSONAL") null else orgName
+                    val finalName = if (selectedType == "PERSONAL") "개인사용자" else name
 
-                    database.userDao().insertUser(User(userId = id, name = savedName, password = pw, userType = selectedType))
+                    database.userDao().insertUser(
+                        User(
+                            userId = id,
+                            name = finalName,
+                            password = pw,
+                            userType = selectedType,
+                            orgName = finalOrgName
+                        )
+                    )
+
                     withContext(Dispatchers.Main) {
                         Toast.makeText(this@SignupActivity, "회원가입 성공!", Toast.LENGTH_SHORT).show()
                         finish()

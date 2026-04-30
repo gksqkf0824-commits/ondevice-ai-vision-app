@@ -11,6 +11,11 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <com.example.ondevice.OverlayView
+        android:id="@+id/overlayView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
     <Button
         android:id="@+id/btnBack"
         android:layout_width="100dp"
@@ -44,7 +49,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="스캔"
+            android:text="스캔 시작"
             android:textColor="#FFFFFF"
             android:textStyle="bold"
             android:layout_marginTop="8dp"/>
@@ -55,29 +60,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:visibility="gone"
-        android:background="#44000000">
-
-        <LinearLayout
-            android:layout_width="150dp"
-            android:layout_height="150dp"
-            android:background="#6600FF00"
-            android:gravity="center"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent"
-            app:layout_constraintVertical_bias="0.4">
-
-            <TextView
-                android:id="@+id/tvBoxText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="인식 대기중..."
-                android:textColor="#FFFFFF"
-                android:textStyle="bold"
-                android:gravity="center"
-                android:textSize="18sp" />
-        </LinearLayout>
+        android:background="#00000000">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -92,7 +75,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="80dp"
                 android:backgroundTint="#00A2FF"
-                android:text="🔊 음성 안내 듣기"
+                android:text="🔊 음성 안내 다시 듣기"
                 android:textSize="24sp"
                 android:textStyle="bold"
                 android:textColor="#FFFFFF"
@@ -103,9 +86,10 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="16dp"
-                android:text="여기에 AI 인식 결과가 표시됩니다."
+                android:text="실시간 환경 분석 중..."
                 android:textColor="#000000"
-                android:textSize="18sp" />
+                android:textSize="18sp"
+                android:textStyle="bold" />
         </LinearLayout>
     </androidx.constraintlayout.widget.ConstraintLayout>
 </androidx.constraintlayout.widget.ConstraintLayout>

@@ -71,4 +71,6 @@ dependencies {
     // Google Play Services Location (GPS 위치 추적용)
     implementation("com.google.android.gms:play-services-location:21.0.1")
     implementation("com.github.PhilJay:MPAndroidChart:v3.1.0")
+    // Google ML Kit Text Recognition (한국어/숫자 인식)
+    implementation("com.google.mlkit:text-recognition-korean:16.0.1")
 }

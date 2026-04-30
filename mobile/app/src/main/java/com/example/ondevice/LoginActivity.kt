@@ -1,4 +1,4 @@
-package com.example.ondevice // 💡 본인의 실제 패키지명으로 꼭 변경하세요!
+package com.example.ondevice
 
 import android.content.Context
 import android.content.Intent
@@ -55,6 +55,7 @@ class LoginActivity : AppCompatActivity() {
                             putString("USER_NAME", user.name)
                             putString("USER_TYPE", user.userType)
                             putString("GUARDIAN_ID", user.guardianId)
+                            putString("ORG_NAME", user.orgName)
                             apply()
                         }
 

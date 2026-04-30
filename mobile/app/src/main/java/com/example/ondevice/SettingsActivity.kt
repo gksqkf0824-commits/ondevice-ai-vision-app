@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.HapticFeedbackConstants
+import android.view.View
 import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -31,19 +32,17 @@ class SettingsActivity : AppCompatActivity() {
         val userId = sharedPref.getString("USER_ID", "알 수 없음")?: ""
         val userName = sharedPref.getString("USER_NAME", "설정 안 함")
         val userType = sharedPref.getString("USER_TYPE", "PERSONAL")
+        val orgName = sharedPref.getString("ORG_NAME", "설정 안 함")
         val guardianId = sharedPref.getString("GUARDIAN_ID", null)
 
-        binding.tvOrgValue.text = if (userType == "PERSONAL") "미소속" else "설정 안 함"
+        // 내 정보 세팅
+        binding.tvOrgValue.text = if (userType == "PERSONAL") "미소속" else orgName
         binding.tvNameValue.text = userName
 
-        // 💡 저장된 보호자 연동 상태 표시
-        if (guardianId!= null) {
-            binding.tvGuardianStatus.text = "연동된 보호자: $guardianId"
-        } else {
-            binding.tvGuardianStatus.text = "보호자 정보가 없습니다"
-        }
+        // 💡 연동된 보호자가 있으면 DB에서 이름을 찾아 UI를 바꿉니다
+        updateGuardianUI(guardianId)
 
-        // 💡 대망의 보호자 연동 버튼 로직 (팝업창 띄우기)
+        // 보호자 연동 버튼 로직
         binding.btnLinkGuardian.setOnClickListener { view ->
             view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
 
@@ -62,6 +61,10 @@ class SettingsActivity : AppCompatActivity() {
                 .show()
         }
 
+        binding.switchNotification.setOnCheckedChangeListener { _, _ ->
+            window.decorView.rootView.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        }
+
         binding.btnLogout.setOnClickListener {
             it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             sharedPref.edit().clear().apply()
@@ -78,25 +81,46 @@ class SettingsActivity : AppCompatActivity() {
         })
     }
 
-    // 💡 DB에서 보호자 아이디가 맞는지 확인하고 내 계정과 묶어주는 함수
+    // 💡 보호자 아이디를 통해 실제 이름을 DB에서 가져와 UI를 업데이트하는 함수
+    private fun updateGuardianUI(guardianId: String?) {
+        if (guardianId!= null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                val guardianUser = database.userDao().getUser(guardianId)
+                withContext(Dispatchers.Main) {
+                    if (guardianUser!= null) {
+                        // 연동 버튼 숨기고 이름/번호 표시
+                        binding.layoutUnlinkedGuardian.visibility = View.GONE
+                        binding.layoutLinkedGuardian.visibility = View.VISIBLE
+                        binding.tvGuardianNameValue.text = guardianUser.name
+                        // 전화번호는 현재 DB에 없으므로 피그마 디자인처럼 고정값 표시
+                        binding.tvGuardianPhoneValue.text = "080-098-1004"
+                    }
+                }
+            }
+        } else {
+            // 보호자가 없으면 버튼 표시
+            binding.layoutUnlinkedGuardian.visibility = View.VISIBLE
+            binding.layoutLinkedGuardian.visibility = View.GONE
+        }
+    }
+
     private fun linkGuardianAccount(myId: String, targetGuardianId: String) {
         if (targetGuardianId.isEmpty()) return
 
         CoroutineScope(Dispatchers.IO).launch {
             val guardianUser = database.userDao().getUser(targetGuardianId)
             withContext(Dispatchers.Main) {
-                // 1. 해당 아이디가 존재하고, 2. 그 사람의 가입 유형이 "보호자(GUARDIAN)"일 때만 연동 허용
                 if (guardianUser!= null && guardianUser.userType == "GUARDIAN") {
 
                     CoroutineScope(Dispatchers.IO).launch {
                         database.userDao().linkGuardian(myId, targetGuardianId)
                     }
 
-                    // 내 스마트폰 세션에도 연동 완료 정보 저장
                     val sharedPref = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
                     sharedPref.edit().putString("GUARDIAN_ID", targetGuardianId).apply()
 
-                    binding.tvGuardianStatus.text = "연동된 보호자: $targetGuardianId"
+                    // 💡 연동 성공 즉시 화면에 보호자 이름이 뜨도록 업데이트!
+                    updateGuardianUI(targetGuardianId)
                     Toast.makeText(this@SettingsActivity, "보호자 연동 성공!", Toast.LENGTH_SHORT).show()
 
                 } else {
