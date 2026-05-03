@@ -65,17 +65,14 @@ dependencies {
     // WorkManager (오프라인 큐 역할)
     val work_version = "2.11.2"
     implementation("androidx.work:work-runtime-ktx:$work_version")
-<<<<<<< HEAD
     // Google MediaPipe AI Vision 라이브러리
     implementation("com.google.mediapipe:tasks-vision:0.10.26")
     // Google Play Services Location (GPS 위치 추적용)
     implementation("com.google.android.gms:play-services-location:21.0.1")
     implementation("com.github.PhilJay:MPAndroidChart:v3.1.0")
     // Google ML Kit Text Recognition (한국어/숫자 인식)
-=======
     //TensorFlow Lite+OCR 
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
     implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
->>>>>>> 0c2fd824c6f7d4c0c5d63945d61387a4bcb8406e
     implementation("com.google.mlkit:text-recognition-korean:16.0.1")
 }
