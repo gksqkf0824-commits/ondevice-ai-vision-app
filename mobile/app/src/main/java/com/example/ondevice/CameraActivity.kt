@@ -29,6 +29,7 @@ import com.example.ondevice.databinding.ActivityCameraBinding
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import kotlinx.coroutines.CoroutineScope
@@ -46,11 +47,16 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sqrt
 
 class CameraActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "CameraActivity"
+
+        // 알고리즘 1:
+        // 사용자 화면 기준 bus bounding box 면적이 전체 화면의 40% 이상일 때만 OCR 수행
+        private const val BUS_OCR_AREA_RATIO_THRESHOLD = 0.4f
     }
 
     private lateinit var binding: ActivityCameraBinding
@@ -239,7 +245,7 @@ class CameraActivity : AppCompatActivity() {
         return inputBuffer
     }
 
-    private fun runYoloRawTflite(bitmap: Bitmap): DetectionResult? {
+    private fun runYoloRawTflite(bitmap: Bitmap): List<DetectionResult> {
         val inputBuffer = bitmapToInputBuffer(bitmap)
 
         /*
@@ -326,7 +332,7 @@ class CameraActivity : AppCompatActivity() {
             .sortedByDescending { it.score }
             .take(maxDetections)
 
-        return nmsResults.firstOrNull()
+        return nmsResults
     }
 
     private fun applyNms(
@@ -462,10 +468,10 @@ class CameraActivity : AppCompatActivity() {
                                 true
                             )
 
-                            val detection = runYoloRawTflite(rotatedBitmap)
+                            val detections = runYoloRawTflite(rotatedBitmap)
 
-                            if (detection != null) {
-                                handleDetectionResult(detection, rotatedBitmap, imageProxy)
+                            if (detections.isNotEmpty()) {
+                                handleDetectionResult(detections, rotatedBitmap, imageProxy)
                             } else {
                                 runOnUiThread {
                                     binding.overlayView.clear()
@@ -501,10 +507,26 @@ class CameraActivity : AppCompatActivity() {
     }
 
     private fun handleDetectionResult(
-        detection: DetectionResult,
+        detections: List<DetectionResult>,
         rotatedBitmap: Bitmap,
         imageProxy: androidx.camera.core.ImageProxy
     ) {
+        /*
+         * 기존에는 detection 하나만 처리했지만,
+         * 앞문 판정을 위해서는 bus와 bus_door를 동시에 봐야 한다.
+         */
+        val bus = detections
+            .filter { it.label.equals("bus", true) }
+            .maxByOrNull { it.score }
+
+        val doors = detections
+            .filter { it.label.equals("bus_door", true) }
+
+        val detection = bus ?: detections.maxByOrNull { it.score } ?: run {
+            imageProxy.close()
+            return
+        }
+
         val category = detection.label
         val score = (detection.score * 100).toInt()
         val bbox = detection.box
@@ -530,17 +552,40 @@ class CameraActivity : AppCompatActivity() {
 
         if (
             !targetBusNumber.isNullOrEmpty() &&
-            (category.contains("bus", true) || category.contains("car", true))
+            category.equals("bus", true)
         ) {
-            handleBusOcr(
-                category = category,
-                score = score,
-                bbox = bbox,
-                mappedBox = mappedBox,
-                direction = direction,
-                rotatedBitmap = rotatedBitmap,
-                imageProxy = imageProxy
-            )
+            /*
+             * 알고리즘 1:
+             * bus bounding box가 전체 화면의 40% 이상일 때만 OCR 수행.
+             * 버스가 너무 멀리 있으면 번호판 OCR 정확도가 낮아서 OCR을 아예 돌리지 않는다.
+             */
+            val busAreaRatio = getBoxAreaRatio(bbox, rotatedBitmap)
+
+            if (busAreaRatio >= BUS_OCR_AREA_RATIO_THRESHOLD) {
+                handleBusOcr(
+                    category = category,
+                    score = score,
+                    bbox = bbox,
+                    mappedBox = mappedBox,
+                    direction = direction,
+                    rotatedBitmap = rotatedBitmap,
+                    doors = doors,
+                    imageProxy = imageProxy
+                )
+            } else {
+                val descText = "전방 $direction 방향에 버스가 감지되었습니다. 번호판 인식을 위해 조금 더 가까이 이동하세요."
+
+                runOnUiThread {
+                    binding.overlayView.setBoxInfo(
+                        mappedBox,
+                        Color.GREEN,
+                        "bus ($score%)"
+                    )
+                    binding.tvResultDesc.text = descText
+                }
+
+                imageProxy.close()
+            }
         } else {
             val descText = "전방 $direction 방향에 $category 가 감지되었습니다."
 
@@ -571,6 +616,7 @@ class CameraActivity : AppCompatActivity() {
         mappedBox: RectF,
         direction: String,
         rotatedBitmap: Bitmap,
+        doors: List<DetectionResult>,
         imageProxy: androidx.camera.core.ImageProxy
     ) {
         if (isOcrProcessing) {
@@ -606,14 +652,53 @@ class CameraActivity : AppCompatActivity() {
                 val recognizedText = visionText.text.replace(Regex("\\s"), "")
 
                 if (!targetBusNumber.isNullOrEmpty() && recognizedText.contains(targetBusNumber!!)) {
+                    /*
+                     * 알고리즘 2:
+                     * OCR로 인식된 번호판 텍스트의 bounding box를 찾고,
+                     * 그 번호판 box와 물리적 거리가 가장 가까운 bus_door를 앞문으로 확정한다.
+                     *
+                     * 국내 버스는 번호표가 앞쪽에 위치하는 경우가 일반적이므로,
+                     * 번호판과 가장 가까운 문을 앞문으로 판단한다.
+                     */
+                    val plateBox = findTargetTextBox(
+                        visionText = visionText,
+                        targetBusNumber = targetBusNumber!!,
+                        cropLeft = left,
+                        cropTop = top
+                    )
+
+                    val frontDoor = if (plateBox != null) {
+                        findNearestDoor(plateBox, doors)
+                    } else {
+                        null
+                    }
+
+                    val frontDoorDirection = if (frontDoor != null) {
+                        getDirectionFromBox(frontDoor.box, rotatedBitmap.width.toFloat())
+                    } else {
+                        direction
+                    }
+
                     val descText =
-                        "(TTS) $targetBusNumber 번, 타겟 버스가 감지되었습니다. 승차문은 $direction 방향입니다."
+                        "(TTS) $targetBusNumber 번, 타겟 버스가 감지되었습니다. 앞문은 $frontDoorDirection 방향입니다."
+
+                    val boxForOverlay = if (frontDoor != null) {
+                        mapBoxToPreview(frontDoor.box, rotatedBitmap)
+                    } else {
+                        mappedBox
+                    }
+
+                    val overlayLabel = if (frontDoor != null) {
+                        "앞문 (${targetBusNumber}번)"
+                    } else {
+                        "버스 ${targetBusNumber}번"
+                    }
 
                     runOnUiThread {
                         binding.overlayView.setBoxInfo(
-                            mappedBox,
+                            boxForOverlay,
                             Color.MAGENTA,
-                            "버스 ${targetBusNumber}번"
+                            overlayLabel
                         )
                         binding.tvResultDesc.text = descText
                     }
@@ -651,6 +736,102 @@ class CameraActivity : AppCompatActivity() {
                 isOcrProcessing = false
                 imageProxy.close()
             }
+    }
+
+    /*
+     * bus bounding box가 전체 화면에서 차지하는 비율을 계산한다.
+     * 예: 0.4f 이상이면 화면의 40% 이상을 버스가 차지한다는 의미.
+     */
+    private fun getBoxAreaRatio(box: RectF, bitmap: Bitmap): Float {
+        val boxArea = max(0f, box.width()) * max(0f, box.height())
+        val imageArea = bitmap.width.toFloat() * bitmap.height.toFloat()
+
+        if (imageArea <= 0f) return 0f
+
+        return boxArea / imageArea
+    }
+
+    /*
+     * OCR은 croppedBitmap 기준 좌표를 반환한다.
+     * 그래서 cropLeft, cropTop을 더해서 원본 rotatedBitmap 기준 좌표로 변환한다.
+     */
+    private fun findTargetTextBox(
+        visionText: Text,
+        targetBusNumber: String,
+        cropLeft: Int,
+        cropTop: Int
+    ): RectF? {
+        val normalizedTarget = targetBusNumber.replace(Regex("\\s"), "")
+
+        for (block in visionText.textBlocks) {
+            for (line in block.lines) {
+                val lineText = line.text.replace(Regex("\\s"), "")
+
+                if (lineText.contains(normalizedTarget)) {
+                    val box = line.boundingBox ?: continue
+
+                    return RectF(
+                        box.left + cropLeft.toFloat(),
+                        box.top + cropTop.toFloat(),
+                        box.right + cropLeft.toFloat(),
+                        box.bottom + cropTop.toFloat()
+                    )
+                }
+            }
+        }
+
+        return null
+    }
+
+    /*
+     * 두 bounding box의 중심점 사이 거리를 계산한다.
+     */
+    private fun distanceBetweenBoxes(a: RectF, b: RectF): Float {
+        val dx = a.centerX() - b.centerX()
+        val dy = a.centerY() - b.centerY()
+        return sqrt(dx * dx + dy * dy)
+    }
+
+    /*
+     * 번호판 bounding box와 가장 가까운 bus_door bounding box를 찾는다.
+     * 이 결과를 앞문으로 사용한다.
+     */
+    private fun findNearestDoor(
+        plateBox: RectF,
+        doors: List<DetectionResult>
+    ): DetectionResult? {
+        return doors.minByOrNull { door ->
+            distanceBetweenBoxes(plateBox, door.box)
+        }
+    }
+
+    /*
+     * bounding box 중심의 x좌표를 기준으로 사용자에게 안내할 방향을 계산한다.
+     */
+    private fun getDirectionFromBox(box: RectF, imageWidth: Float): String {
+        val centerX = box.centerX()
+
+        return when {
+            centerX < imageWidth * 0.33f -> "10시"
+            centerX > imageWidth * 0.66f -> "2시"
+            else -> "12시"
+        }
+    }
+
+    /*
+     * TFLite 탐지 좌표는 rotatedBitmap 기준이고,
+     * overlayView는 PreviewView 기준이므로 화면 표시용 좌표로 변환한다.
+     */
+    private fun mapBoxToPreview(box: RectF, rotatedBitmap: Bitmap): RectF {
+        val scaleX = binding.viewFinder.width.toFloat() / rotatedBitmap.width.toFloat()
+        val scaleY = binding.viewFinder.height.toFloat() / rotatedBitmap.height.toFloat()
+
+        return RectF(
+            box.left * scaleX,
+            box.top * scaleY,
+            box.right * scaleX,
+            box.bottom * scaleY
+        )
     }
 
     private fun handleBackAction() {
