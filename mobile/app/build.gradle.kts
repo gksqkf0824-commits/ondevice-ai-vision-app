@@ -65,8 +65,6 @@ dependencies {
     // WorkManager (오프라인 큐 역할)
     val work_version = "2.11.2"
     implementation("androidx.work:work-runtime-ktx:$work_version")
-    // Google MediaPipe AI Vision 라이브러리
-    implementation("com.google.mediapipe:tasks-vision:0.10.26")
     // Google Play Services Location (GPS 위치 추적용)
     implementation("com.google.android.gms:play-services-location:21.0.1")
     implementation("com.github.PhilJay:MPAndroidChart:v3.1.0")
