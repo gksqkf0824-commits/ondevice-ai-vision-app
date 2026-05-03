@@ -36,6 +36,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.tensorflow.lite.Interpreter
+// [최적화 추가] GPU Delegate import
+import org.tensorflow.lite.gpu.CompatibilityList
+import org.tensorflow.lite.gpu.GpuDelegate
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.nio.ByteBuffer
@@ -80,6 +83,12 @@ class CameraActivity : AppCompatActivity() {
     private val iouThreshold = 0.45f
     private val maxDetections = 20
 
+    // --- [최적화 추가] 프레임 단위 가비지 컬렉터(GC) 호출 방지를 위한 메모리 사전 할당 ---
+    private lateinit var inputBuffer: ByteBuffer
+    private lateinit var pixels: IntArray
+    private lateinit var outputArray: Array<Array<FloatArray>>
+    private val frameMatrix = Matrix()
+
     data class DetectionResult(
         val label: String,
         val score: Float,
@@ -119,8 +128,17 @@ class CameraActivity : AppCompatActivity() {
             labels = loadLabels("labels.txt")
             Log.d(TAG, "labels loaded: ${labels.size}")
 
+            // --- [최적화 수정] GPU 하드웨어 가속 동적 할당 ---
+            val compatList = CompatibilityList()
             val options = Interpreter.Options().apply {
-                setNumThreads(4)
+                if (compatList.isDelegateSupportedOnThisDevice) {
+                    val delegateOptions = compatList.bestOptionsForThisDevice
+                    this.addDelegate(GpuDelegate(delegateOptions))
+                    Log.d(TAG, "GPU Delegate Activated")
+                } else {
+                    this.setNumThreads(4)
+                    Log.d(TAG, "CPU Threads Activated")
+                }
             }
 
             interpreter = Interpreter(
@@ -128,7 +146,14 @@ class CameraActivity : AppCompatActivity() {
                 options
             )
 
-            Log.d(TAG, "TFLite model loaded")
+            // --- [최적화 추가] TFLite 버퍼 및 배열 메모리 1회 초기화 ---
+            inputBuffer = ByteBuffer.allocateDirect(1 * modelInputSize * modelInputSize * 3 * 4).apply {
+                order(ByteOrder.nativeOrder())
+            }
+            pixels = IntArray(modelInputSize * modelInputSize)
+            outputArray = Array(1) { Array(4 + labels.size) { FloatArray(candidateCount) } }
+
+            Log.d(TAG, "TFLite model loaded and memory pre-allocated")
             logModelInfo()
         } catch (e: Exception) {
             Log.e(TAG, "모델 또는 labels 로드 실패", e)
@@ -217,10 +242,9 @@ class CameraActivity : AppCompatActivity() {
     private fun bitmapToInputBuffer(bitmap: Bitmap): ByteBuffer {
         val resizedBitmap = Bitmap.createScaledBitmap(bitmap, modelInputSize, modelInputSize, true)
 
-        val inputBuffer = ByteBuffer.allocateDirect(1 * modelInputSize * modelInputSize * 3 * 4)
-        inputBuffer.order(ByteOrder.nativeOrder())
+        // [최적화 수정] 매번 allocate 하지 않고 기존 버퍼를 초기화 후 재사용
+        inputBuffer.rewind()
 
-        val pixels = IntArray(modelInputSize * modelInputSize)
         resizedBitmap.getPixels(
             pixels,
             0,
@@ -242,28 +266,21 @@ class CameraActivity : AppCompatActivity() {
         }
 
         inputBuffer.rewind()
+        
+        // [최적화 추가] 리사이즈용으로 생성된 임시 비트맵 즉시 파기 (메모리 확보)
+        if (resizedBitmap != bitmap) {
+            resizedBitmap.recycle()
+        }
+        
         return inputBuffer
     }
 
     private fun runYoloRawTflite(bitmap: Bitmap): List<DetectionResult> {
-        val inputBuffer = bitmapToInputBuffer(bitmap)
+        // [최적화 수정]
+        val buffer = bitmapToInputBuffer(bitmap) 
 
-        /*
-         * 모델 출력: [1, 8, 8400]
-         *
-         * 4클래스 모델 기준:
-         * output[0][0][i] = centerX
-         * output[0][1][i] = centerY
-         * output[0][2][i] = width
-         * output[0][3][i] = height
-         * output[0][4][i] = class 0 score
-         * output[0][5][i] = class 1 score
-         * output[0][6][i] = class 2 score
-         * output[0][7][i] = class 3 score
-         */
-        val output = Array(1) { Array(4 + labels.size) { FloatArray(candidateCount) } }
-
-        interpreter.run(inputBuffer, output)
+        // [최적화 수정] 거대한 Array를 매 프레임 생성하지 않고, 미리 할당된 outputArray 재사용
+        interpreter.run(buffer, outputArray)
 
         val detections = mutableListOf<DetectionResult>()
 
@@ -271,16 +288,16 @@ class CameraActivity : AppCompatActivity() {
         val imgHeight = bitmap.height.toFloat()
 
         for (i in 0 until candidateCount) {
-            var cx = output[0][0][i]
-            var cy = output[0][1][i]
-            var w = output[0][2][i]
-            var h = output[0][3][i]
+            var cx = outputArray[0][0][i]
+            var cy = outputArray[0][1][i]
+            var w = outputArray[0][2][i]
+            var h = outputArray[0][3][i]
 
             var bestClassId = -1
             var bestScore = 0f
 
             for (classId in labels.indices) {
-                val score = output[0][4 + classId][i]
+                val score = outputArray[0][4 + classId][i]
                 if (score > bestScore) {
                     bestScore = score
                     bestClassId = classId
@@ -290,10 +307,6 @@ class CameraActivity : AppCompatActivity() {
             if (bestScore < scoreThreshold) continue
             if (bestClassId !in labels.indices) continue
 
-            /*
-             * Ultralytics TFLite raw output은 대개 640 기준 좌표로 나옴.
-             * 혹시 0~1 정규화 좌표인 경우도 대비.
-             */
             val looksNormalized = cx <= 1.5f && cy <= 1.5f && w <= 1.5f && h <= 1.5f
 
             if (looksNormalized) {
@@ -454,9 +467,9 @@ class CameraActivity : AppCompatActivity() {
                         try {
                             val bitmap = imageProxy.toBitmap()
 
-                            val matrix = Matrix().apply {
-                                postRotate(imageProxy.imageInfo.rotationDegrees.toFloat())
-                            }
+                            // [최적화 수정] 매트릭스 객체를 매 프레임 생성하지 않고 미리 만들어둔 객체 재사용
+                            frameMatrix.reset()
+                            frameMatrix.postRotate(imageProxy.imageInfo.rotationDegrees.toFloat())
 
                             val rotatedBitmap = Bitmap.createBitmap(
                                 bitmap,
@@ -464,9 +477,14 @@ class CameraActivity : AppCompatActivity() {
                                 0,
                                 bitmap.width,
                                 bitmap.height,
-                                matrix,
+                                frameMatrix,
                                 true
                             )
+
+                            // [최적화 추가] 회전 처리 후 쓸모없어진 원본 비트맵 해제
+                            if (bitmap != rotatedBitmap) {
+                                bitmap.recycle()
+                            }
 
                             val detections = runYoloRawTflite(rotatedBitmap)
 
@@ -511,10 +529,6 @@ class CameraActivity : AppCompatActivity() {
         rotatedBitmap: Bitmap,
         imageProxy: androidx.camera.core.ImageProxy
     ) {
-        /*
-         * 기존에는 detection 하나만 처리했지만,
-         * 앞문 판정을 위해서는 bus와 bus_door를 동시에 봐야 한다.
-         */
         val bus = detections
             .filter { it.label.equals("bus", true) }
             .maxByOrNull { it.score }
@@ -554,11 +568,6 @@ class CameraActivity : AppCompatActivity() {
             !targetBusNumber.isNullOrEmpty() &&
             category.equals("bus", true)
         ) {
-            /*
-             * 알고리즘 1:
-             * bus bounding box가 전체 화면의 40% 이상일 때만 OCR 수행.
-             * 버스가 너무 멀리 있으면 번호판 OCR 정확도가 낮아서 OCR을 아예 돌리지 않는다.
-             */
             val busAreaRatio = getBoxAreaRatio(bbox, rotatedBitmap)
 
             if (busAreaRatio >= BUS_OCR_AREA_RATIO_THRESHOLD) {
@@ -652,14 +661,6 @@ class CameraActivity : AppCompatActivity() {
                 val recognizedText = visionText.text.replace(Regex("\\s"), "")
 
                 if (!targetBusNumber.isNullOrEmpty() && recognizedText.contains(targetBusNumber!!)) {
-                    /*
-                     * 알고리즘 2:
-                     * OCR로 인식된 번호판 텍스트의 bounding box를 찾고,
-                     * 그 번호판 box와 물리적 거리가 가장 가까운 bus_door를 앞문으로 확정한다.
-                     *
-                     * 국내 버스는 번호표가 앞쪽에 위치하는 경우가 일반적이므로,
-                     * 번호판과 가장 가까운 문을 앞문으로 판단한다.
-                     */
                     val plateBox = findTargetTextBox(
                         visionText = visionText,
                         targetBusNumber = targetBusNumber!!,
@@ -738,10 +739,6 @@ class CameraActivity : AppCompatActivity() {
             }
     }
 
-    /*
-     * bus bounding box가 전체 화면에서 차지하는 비율을 계산한다.
-     * 예: 0.4f 이상이면 화면의 40% 이상을 버스가 차지한다는 의미.
-     */
     private fun getBoxAreaRatio(box: RectF, bitmap: Bitmap): Float {
         val boxArea = max(0f, box.width()) * max(0f, box.height())
         val imageArea = bitmap.width.toFloat() * bitmap.height.toFloat()
@@ -751,10 +748,6 @@ class CameraActivity : AppCompatActivity() {
         return boxArea / imageArea
     }
 
-    /*
-     * OCR은 croppedBitmap 기준 좌표를 반환한다.
-     * 그래서 cropLeft, cropTop을 더해서 원본 rotatedBitmap 기준 좌표로 변환한다.
-     */
     private fun findTargetTextBox(
         visionText: Text,
         targetBusNumber: String,
@@ -783,19 +776,12 @@ class CameraActivity : AppCompatActivity() {
         return null
     }
 
-    /*
-     * 두 bounding box의 중심점 사이 거리를 계산한다.
-     */
     private fun distanceBetweenBoxes(a: RectF, b: RectF): Float {
         val dx = a.centerX() - b.centerX()
         val dy = a.centerY() - b.centerY()
         return sqrt(dx * dx + dy * dy)
     }
 
-    /*
-     * 번호판 bounding box와 가장 가까운 bus_door bounding box를 찾는다.
-     * 이 결과를 앞문으로 사용한다.
-     */
     private fun findNearestDoor(
         plateBox: RectF,
         doors: List<DetectionResult>
@@ -805,9 +791,6 @@ class CameraActivity : AppCompatActivity() {
         }
     }
 
-    /*
-     * bounding box 중심의 x좌표를 기준으로 사용자에게 안내할 방향을 계산한다.
-     */
     private fun getDirectionFromBox(box: RectF, imageWidth: Float): String {
         val centerX = box.centerX()
 
@@ -818,10 +801,6 @@ class CameraActivity : AppCompatActivity() {
         }
     }
 
-    /*
-     * TFLite 탐지 좌표는 rotatedBitmap 기준이고,
-     * overlayView는 PreviewView 기준이므로 화면 표시용 좌표로 변환한다.
-     */
     private fun mapBoxToPreview(box: RectF, rotatedBitmap: Bitmap): RectF {
         val scaleX = binding.viewFinder.width.toFloat() / rotatedBitmap.width.toFloat()
         val scaleY = binding.viewFinder.height.toFloat() / rotatedBitmap.height.toFloat()
