@@ -1,6 +1,7 @@
 package com.example.ondevice
 
 import android.Manifest
+import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -9,10 +10,12 @@ import android.graphics.Matrix
 import android.graphics.RectF
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
+import android.util.Size
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.widget.Toast
@@ -35,6 +38,7 @@ import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 // [최적화 추가] GPU Delegate import
 import org.tensorflow.lite.gpu.CompatibilityList
@@ -50,16 +54,28 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 class CameraActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "CameraActivity"
+        private const val METRIC_TAG = "CameraMetrics"
 
         // 알고리즘 1:
         // 사용자 화면 기준 bus bounding box 면적이 전체 화면의 40% 이상일 때만 OCR 수행
         private const val BUS_OCR_AREA_RATIO_THRESHOLD = 0.4f
+
+        private const val MODEL_ASSET_NAME = "BusProject_v11n_best_320_full_int8.tflite"
+        private const val ANALYSIS_TARGET_WIDTH = 320
+        private const val ANALYSIS_TARGET_HEIGHT = 320
+        private const val BENCHMARK_FRAME_WINDOW = 10
+        private const val PERF_FRAME_LOG_INTERVAL = 10
+        private const val BENCHMARK_TARGET_FPS = 15.0
+        private const val BENCHMARK_TARGET_FRAME_MS = 100.0
+        private const val BENCHMARK_TARGET_INFERENCE_MS = 66.0
+        private const val BENCHMARK_TARGET_OCR_MS = 1000.0
     }
 
     private lateinit var binding: ActivityCameraBinding
@@ -68,6 +84,15 @@ class CameraActivity : AppCompatActivity() {
 
     private lateinit var interpreter: Interpreter
     private lateinit var labels: List<String>
+    private var gpuDelegate: GpuDelegate? = null
+    private var inferenceBackend = "unknown"
+    private var inputDataType = DataType.FLOAT32
+    private var outputDataType = DataType.FLOAT32
+    private var inputScale = 1f
+    private var inputZeroPoint = 0
+    private var outputScale = 1f
+    private var outputZeroPoint = 0
+    private var useFastInt8InputQuantization = false
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private val textRecognizer = TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
@@ -76,17 +101,33 @@ class CameraActivity : AppCompatActivity() {
     private var isScanning = false
     private var isOcrProcessing = false
     private var lastSavedTimestamp = 0L
+    private var lastFrameTimestampMs = 0L
+    private var processedFrameCount = 0
+    private var fpsSum = 0.0
+    private var minFps = Float.MAX_VALUE
+    private var maxFps = 0f
+    private var inferenceMsSum = 0.0
+    private var maxInferenceMs = 0.0
+    private var frameMsSum = 0.0
+    private var maxFrameMs = 0.0
+    private var detectionCountSum = 0
+    private var lastInferenceTimeMs = 0.0
+    private var ocrCount = 0
+    private var ocrMsSum = 0.0
+    private var maxOcrMs = 0.0
 
-    private val modelInputSize = 640
-    private val candidateCount = 8400
+    private var modelInputSize = 640
+    private var candidateCount = 8400
     private val scoreThreshold = 0.4f
     private val iouThreshold = 0.45f
     private val maxDetections = 20
+    private val maxNmsCandidates = 120
 
     // --- [최적화 추가] 프레임 단위 가비지 컬렉터(GC) 호출 방지를 위한 메모리 사전 할당 ---
     private lateinit var inputBuffer: ByteBuffer
     private lateinit var pixels: IntArray
-    private lateinit var outputArray: Array<Array<FloatArray>>
+    private var outputFloatArray: Array<Array<FloatArray>>? = null
+    private var outputByteBuffer: ByteBuffer? = null
     private val frameMatrix = Matrix()
 
     data class DetectionResult(
@@ -128,33 +169,40 @@ class CameraActivity : AppCompatActivity() {
             labels = loadLabels("labels.txt")
             Log.d(TAG, "labels loaded: ${labels.size}")
 
-            // --- [최적화 수정] GPU 하드웨어 가속 동적 할당 ---
+            val useQuantizedModel = MODEL_ASSET_NAME.contains("int8", ignoreCase = true) ||
+                MODEL_ASSET_NAME.contains("uint8", ignoreCase = true)
             val compatList = CompatibilityList()
             val options = Interpreter.Options().apply {
-                if (compatList.isDelegateSupportedOnThisDevice) {
-                    val delegateOptions = compatList.bestOptionsForThisDevice
-                    this.addDelegate(GpuDelegate(delegateOptions))
+                if (!useQuantizedModel && compatList.isDelegateSupportedOnThisDevice) {
+                    val delegate = GpuDelegate()
+                    gpuDelegate = delegate
+                    this.addDelegate(delegate)
+                    inferenceBackend = "gpu"
                     Log.d(TAG, "GPU Delegate Activated")
                 } else {
-                    this.setNumThreads(4)
-                    Log.d(TAG, "CPU Threads Activated")
+                    val threadCount = max(1, min(4, Runtime.getRuntime().availableProcessors() - 1))
+                    this.setNumThreads(threadCount)
+                    this.setUseXNNPACK(true)
+                    inferenceBackend = if (useQuantizedModel) {
+                        "int8_cpu_xnnpack_${threadCount}threads"
+                    } else {
+                        "cpu_xnnpack_${threadCount}threads"
+                    }
+                    Log.d(TAG, "CPU Threads Activated: $threadCount")
                 }
             }
 
             interpreter = Interpreter(
-                loadModelFile("BusProject_v11n_best_float16.tflite"),
+                loadModelFile(MODEL_ASSET_NAME),
                 options
             )
 
-            // --- [최적화 추가] TFLite 버퍼 및 배열 메모리 1회 초기화 ---
-            inputBuffer = ByteBuffer.allocateDirect(1 * modelInputSize * modelInputSize * 3 * 4).apply {
-                order(ByteOrder.nativeOrder())
-            }
-            pixels = IntArray(modelInputSize * modelInputSize)
-            outputArray = Array(1) { Array(4 + labels.size) { FloatArray(candidateCount) } }
+            initTensorBuffers()
 
             Log.d(TAG, "TFLite model loaded and memory pre-allocated")
             logModelInfo()
+            logDeviceInfo()
+            logBenchmarkConfig()
         } catch (e: Exception) {
             Log.e(TAG, "모델 또는 labels 로드 실패", e)
             Toast.makeText(this, "모델 로드 실패: ${e.message}", Toast.LENGTH_LONG).show()
@@ -172,6 +220,7 @@ class CameraActivity : AppCompatActivity() {
 
         binding.btnScan.setOnClickListener { view ->
             view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            resetMetrics()
             isScanning = true
             binding.btnScan.visibility = View.GONE
             binding.layoutResult.visibility = View.VISIBLE
@@ -212,6 +261,184 @@ class CameraActivity : AppCompatActivity() {
         Log.d(TAG, "Output shape: ${outputTensor.shape().contentToString()}")
         Log.d(TAG, "Output type: ${outputTensor.dataType()}")
     }
+
+    private fun initTensorBuffers() {
+        val inputTensor = interpreter.getInputTensor(0)
+        val outputTensor = interpreter.getOutputTensor(0)
+        val inputShape = inputTensor.shape()
+        val outputShape = outputTensor.shape()
+
+        modelInputSize = inputShape.getOrNull(1) ?: modelInputSize
+        candidateCount = outputShape.getOrNull(2) ?: candidateCount
+        inputDataType = inputTensor.dataType()
+        outputDataType = outputTensor.dataType()
+
+        val inputQuant = inputTensor.quantizationParams()
+        inputScale = inputQuant.getScale().takeIf { it > 0f } ?: 1f
+        inputZeroPoint = inputQuant.getZeroPoint()
+        useFastInt8InputQuantization =
+            inputDataType == DataType.INT8 &&
+                kotlin.math.abs(inputScale - (1f / 255f)) < 0.00001f &&
+                inputZeroPoint == -128
+
+        val outputQuant = outputTensor.quantizationParams()
+        outputScale = outputQuant.getScale().takeIf { it > 0f } ?: 1f
+        outputZeroPoint = outputQuant.getZeroPoint()
+
+        inputBuffer = ByteBuffer.allocateDirect(inputTensor.numBytes()).apply {
+            order(ByteOrder.nativeOrder())
+        }
+        pixels = IntArray(modelInputSize * modelInputSize)
+
+        if (outputDataType == DataType.FLOAT32) {
+            outputFloatArray = Array(1) { Array(4 + labels.size) { FloatArray(candidateCount) } }
+            outputByteBuffer = null
+        } else {
+            outputFloatArray = null
+            outputByteBuffer = ByteBuffer.allocateDirect(outputTensor.numBytes()).apply {
+                order(ByteOrder.nativeOrder())
+            }
+        }
+
+        Log.i(
+            METRIC_TAG,
+            "TENSOR_CONFIG inputShape=${inputShape.contentToString()} inputType=$inputDataType " +
+                "inputBytes=${inputTensor.numBytes()} outputShape=${outputShape.contentToString()} " +
+                "outputType=$outputDataType outputBytes=${outputTensor.numBytes()} candidates=$candidateCount " +
+                "fastInt8Input=$useFastInt8InputQuantization"
+        )
+    }
+
+    private fun logDeviceInfo() {
+        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val memoryInfo = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memoryInfo)
+
+        Log.i(
+            METRIC_TAG,
+            "DEVICE_INFO manufacturer=${Build.MANUFACTURER}, model=${Build.MODEL}, " +
+                "sdk=${Build.VERSION.SDK_INT}, os=${Build.VERSION.RELEASE}, " +
+                "ramMb=${memoryInfo.totalMem / (1024 * 1024)}, " +
+                "cpuAbis=${Build.SUPPORTED_ABIS.joinToString("/")}, backend=$inferenceBackend"
+        )
+    }
+
+    private fun logBenchmarkConfig() {
+        Log.i(
+            METRIC_TAG,
+            "BENCHMARK_CONFIG analysis=${ANALYSIS_TARGET_WIDTH}x$ANALYSIS_TARGET_HEIGHT, " +
+                "modelInput=${modelInputSize}x$modelInputSize, backend=$inferenceBackend, " +
+                "targets=[fps>=$BENCHMARK_TARGET_FPS, frameMs<=$BENCHMARK_TARGET_FRAME_MS, " +
+                "inferenceMs<=$BENCHMARK_TARGET_INFERENCE_MS, ocrMs<=$BENCHMARK_TARGET_OCR_MS]"
+        )
+    }
+
+    private fun resetMetrics() {
+        lastFrameTimestampMs = 0L
+        processedFrameCount = 0
+        fpsSum = 0.0
+        minFps = Float.MAX_VALUE
+        maxFps = 0f
+        inferenceMsSum = 0.0
+        maxInferenceMs = 0.0
+        frameMsSum = 0.0
+        maxFrameMs = 0.0
+        detectionCountSum = 0
+        lastInferenceTimeMs = 0.0
+        ocrCount = 0
+        ocrMsSum = 0.0
+        maxOcrMs = 0.0
+        Log.i(METRIC_TAG, "METRICS_RESET target=$targetBusNumber")
+        logBenchmarkConfig()
+    }
+
+    private fun logFrameMetrics(
+        frameProcessTimeMs: Double,
+        inferenceTimeMs: Double,
+        detectionCount: Int
+    ) {
+        val nowMs = SystemClock.elapsedRealtime()
+        val fps = if (lastFrameTimestampMs > 0L) {
+            1000f / max(1L, nowMs - lastFrameTimestampMs)
+        } else {
+            0f
+        }
+
+        lastFrameTimestampMs = nowMs
+        processedFrameCount += 1
+
+        if (fps > 0f) {
+            fpsSum += fps.toDouble()
+            minFps = min(minFps, fps)
+            maxFps = max(maxFps, fps)
+        }
+
+        inferenceMsSum += inferenceTimeMs
+        maxInferenceMs = max(maxInferenceMs, inferenceTimeMs)
+        frameMsSum += frameProcessTimeMs
+        maxFrameMs = max(maxFrameMs, frameProcessTimeMs)
+        detectionCountSum += detectionCount
+
+        if (processedFrameCount % PERF_FRAME_LOG_INTERVAL == 0) {
+            Log.i(
+                METRIC_TAG,
+                "PERF_FRAME frame=$processedFrameCount fps=${fmt(fps.toDouble())} " +
+                    "inferenceMs=${fmt(inferenceTimeMs)} frameProcessMs=${fmt(frameProcessTimeMs)} " +
+                    "detections=$detectionCount"
+            )
+        }
+
+        if (processedFrameCount % BENCHMARK_FRAME_WINDOW == 0) {
+            logBenchmarkTable()
+        }
+    }
+
+    private fun logOcrMetrics(ocrTimeMs: Double) {
+        ocrCount += 1
+        ocrMsSum += ocrTimeMs
+        maxOcrMs = max(maxOcrMs, ocrTimeMs)
+
+        Log.i(METRIC_TAG, "OCR_COMPLETE count=$ocrCount ocrMs=${fmt(ocrTimeMs)}")
+    }
+
+    private fun logBenchmarkTable() {
+        val measuredFpsFrames = max(1, processedFrameCount - 1)
+        val avgFps = fpsSum / measuredFpsFrames
+        val avgFrameMs = frameMsSum / processedFrameCount
+        val avgInferenceMs = inferenceMsSum / processedFrameCount
+        val avgDetections = detectionCountSum.toDouble() / processedFrameCount
+        val avgOcrMs = if (ocrCount > 0) ocrMsSum / ocrCount else 0.0
+        val minFpsForLog = if (minFps == Float.MAX_VALUE) 0.0 else minFps.toDouble()
+
+        Log.i(
+            METRIC_TAG,
+            "BENCHMARK_SUMMARY window=$processedFrameCount backend=$inferenceBackend " +
+                "avgFps=${fmt(avgFps)} avgFrameMs=${fmt(avgFrameMs)} " +
+                "avgTfliteMs=${fmt(avgInferenceMs)} avgOcrMs=${fmt(avgOcrMs)}"
+        )
+
+        Log.i(
+            METRIC_TAG,
+            """
+            BENCHMARK_TABLE window=$processedFrameCount backend=$inferenceBackend
+            | metric        | current | target | result |
+            | avg_fps       | ${fmt(avgFps)} | >= ${fmt(BENCHMARK_TARGET_FPS)} | ${pass(avgFps >= BENCHMARK_TARGET_FPS)} |
+            | min_fps       | ${fmt(minFpsForLog)} | >= ${fmt(BENCHMARK_TARGET_FPS)} | ${pass(minFpsForLog >= BENCHMARK_TARGET_FPS)} |
+            | max_fps       | ${fmt(maxFps.toDouble())} | - | info |
+            | avg_frame_ms  | ${fmt(avgFrameMs)} | <= ${fmt(BENCHMARK_TARGET_FRAME_MS)} | ${pass(avgFrameMs <= BENCHMARK_TARGET_FRAME_MS)} |
+            | max_frame_ms  | ${fmt(maxFrameMs)} | <= ${fmt(BENCHMARK_TARGET_FRAME_MS)} | ${pass(maxFrameMs <= BENCHMARK_TARGET_FRAME_MS)} |
+            | avg_tflite_ms | ${fmt(avgInferenceMs)} | <= ${fmt(BENCHMARK_TARGET_INFERENCE_MS)} | ${pass(avgInferenceMs <= BENCHMARK_TARGET_INFERENCE_MS)} |
+            | max_tflite_ms | ${fmt(maxInferenceMs)} | <= ${fmt(BENCHMARK_TARGET_INFERENCE_MS)} | ${pass(maxInferenceMs <= BENCHMARK_TARGET_INFERENCE_MS)} |
+            | avg_ocr_ms    | ${fmt(avgOcrMs)} | <= ${fmt(BENCHMARK_TARGET_OCR_MS)} | ${if (ocrCount > 0) pass(avgOcrMs <= BENCHMARK_TARGET_OCR_MS) else "no_sample"} |
+            | max_ocr_ms    | ${fmt(maxOcrMs)} | <= ${fmt(BENCHMARK_TARGET_OCR_MS)} | ${if (ocrCount > 0) pass(maxOcrMs <= BENCHMARK_TARGET_OCR_MS) else "no_sample"} |
+            | avg_detect    | ${fmt(avgDetections)} | - | info |
+            """.trimIndent()
+        )
+    }
+
+    private fun pass(isPassed: Boolean): String = if (isPassed) "pass" else "check"
+
+    private fun fmt(value: Double): String = String.format(Locale.US, "%.2f", value)
 
     private fun loadModelFile(assetName: String): MappedByteBuffer {
         val fileDescriptor = assets.openFd(assetName)
@@ -256,13 +483,9 @@ class CameraActivity : AppCompatActivity() {
         )
 
         for (pixel in pixels) {
-            val r = ((pixel shr 16) and 0xFF) / 255.0f
-            val g = ((pixel shr 8) and 0xFF) / 255.0f
-            val b = (pixel and 0xFF) / 255.0f
-
-            inputBuffer.putFloat(r)
-            inputBuffer.putFloat(g)
-            inputBuffer.putFloat(b)
+            putInputChannel((pixel shr 16) and 0xFF)
+            putInputChannel((pixel shr 8) and 0xFF)
+            putInputChannel(pixel and 0xFF)
         }
 
         inputBuffer.rewind()
@@ -275,12 +498,43 @@ class CameraActivity : AppCompatActivity() {
         return inputBuffer
     }
 
+    private fun putInputChannel(channelValue: Int) {
+        when (inputDataType) {
+            DataType.FLOAT32 -> inputBuffer.putFloat(channelValue / 255.0f)
+            DataType.UINT8 -> inputBuffer.put(channelValue.coerceIn(0, 255).toByte())
+            DataType.INT8 -> {
+                val quantizedValue = if (useFastInt8InputQuantization) {
+                    channelValue - 128
+                } else {
+                    val normalizedValue = channelValue / 255.0f
+                    (normalizedValue / inputScale + inputZeroPoint)
+                        .roundToInt()
+                        .coerceIn(-128, 127)
+                }
+                inputBuffer.put(quantizedValue.toByte())
+            }
+            else -> throw IllegalStateException("Unsupported input tensor type: $inputDataType")
+        }
+    }
+
     private fun runYoloRawTflite(bitmap: Bitmap): List<DetectionResult> {
         // [최적화 수정]
         val buffer = bitmapToInputBuffer(bitmap) 
 
         // [최적화 수정] 거대한 Array를 매 프레임 생성하지 않고, 미리 할당된 outputArray 재사용
-        interpreter.run(buffer, outputArray)
+        val inferenceStartNs = SystemClock.elapsedRealtimeNanos()
+        val floatOutput = outputFloatArray
+        val byteOutput = outputByteBuffer
+        if (floatOutput != null) {
+            interpreter.run(buffer, floatOutput)
+        } else if (byteOutput != null) {
+            byteOutput.rewind()
+            interpreter.run(buffer, byteOutput)
+            byteOutput.rewind()
+        } else {
+            throw IllegalStateException("Output buffer is not initialized")
+        }
+        lastInferenceTimeMs = (SystemClock.elapsedRealtimeNanos() - inferenceStartNs) / 1_000_000.0
 
         val detections = mutableListOf<DetectionResult>()
 
@@ -288,16 +542,16 @@ class CameraActivity : AppCompatActivity() {
         val imgHeight = bitmap.height.toFloat()
 
         for (i in 0 until candidateCount) {
-            var cx = outputArray[0][0][i]
-            var cy = outputArray[0][1][i]
-            var w = outputArray[0][2][i]
-            var h = outputArray[0][3][i]
+            var cx = getOutputValue(0, i)
+            var cy = getOutputValue(1, i)
+            var w = getOutputValue(2, i)
+            var h = getOutputValue(3, i)
 
             var bestClassId = -1
             var bestScore = 0f
 
             for (classId in labels.indices) {
-                val score = outputArray[0][4 + classId][i]
+                val score = getOutputValue(4 + classId, i)
                 if (score > bestScore) {
                     bestScore = score
                     bestClassId = classId
@@ -341,11 +595,36 @@ class CameraActivity : AppCompatActivity() {
             )
         }
 
-        val nmsResults = applyNms(detections, iouThreshold)
+        val nmsInput = if (detections.size > maxNmsCandidates) {
+            detections.sortedByDescending { it.score }.take(maxNmsCandidates)
+        } else {
+            detections
+        }
+
+        val nmsResults = applyNms(nmsInput, iouThreshold)
             .sortedByDescending { it.score }
             .take(maxDetections)
 
         return nmsResults
+    }
+
+    private fun getOutputValue(channel: Int, candidateIndex: Int): Float {
+        outputFloatArray?.let { return it[0][channel][candidateIndex] }
+
+        val buffer = outputByteBuffer ?: throw IllegalStateException("Output buffer is not initialized")
+        val index = channel * candidateCount + candidateIndex
+
+        return when (outputDataType) {
+            DataType.UINT8 -> {
+                val raw = buffer.get(index).toInt() and 0xFF
+                (raw - outputZeroPoint) * outputScale
+            }
+            DataType.INT8 -> {
+                val raw = buffer.get(index).toInt()
+                (raw - outputZeroPoint) * outputScale
+            }
+            else -> throw IllegalStateException("Unsupported output tensor type: $outputDataType")
+        }
     }
 
     private fun applyNms(
@@ -455,6 +734,8 @@ class CameraActivity : AppCompatActivity() {
             }
 
             val imageAnalyzer = ImageAnalysis.Builder()
+                .setTargetResolution(Size(ANALYSIS_TARGET_WIDTH, ANALYSIS_TARGET_HEIGHT))
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
                 .also {
@@ -464,22 +745,28 @@ class CameraActivity : AppCompatActivity() {
                             return@setAnalyzer
                         }
 
+                        val frameStartNs = SystemClock.elapsedRealtimeNanos()
+
                         try {
                             val bitmap = imageProxy.toBitmap()
 
                             // [최적화 수정] 매트릭스 객체를 매 프레임 생성하지 않고 미리 만들어둔 객체 재사용
-                            frameMatrix.reset()
-                            frameMatrix.postRotate(imageProxy.imageInfo.rotationDegrees.toFloat())
-
-                            val rotatedBitmap = Bitmap.createBitmap(
-                                bitmap,
-                                0,
-                                0,
-                                bitmap.width,
-                                bitmap.height,
-                                frameMatrix,
-                                true
-                            )
+                            val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+                            val rotatedBitmap = if (rotationDegrees == 0) {
+                                bitmap
+                            } else {
+                                frameMatrix.reset()
+                                frameMatrix.postRotate(rotationDegrees.toFloat())
+                                Bitmap.createBitmap(
+                                    bitmap,
+                                    0,
+                                    0,
+                                    bitmap.width,
+                                    bitmap.height,
+                                    frameMatrix,
+                                    true
+                                )
+                            }
 
                             // [최적화 추가] 회전 처리 후 쓸모없어진 원본 비트맵 해제
                             if (bitmap != rotatedBitmap) {
@@ -487,6 +774,14 @@ class CameraActivity : AppCompatActivity() {
                             }
 
                             val detections = runYoloRawTflite(rotatedBitmap)
+                            val frameProcessTimeMs =
+                                (SystemClock.elapsedRealtimeNanos() - frameStartNs) / 1_000_000.0
+
+                            logFrameMetrics(
+                                frameProcessTimeMs = frameProcessTimeMs,
+                                inferenceTimeMs = lastInferenceTimeMs,
+                                detectionCount = detections.size
+                            )
 
                             if (detections.isNotEmpty()) {
                                 handleDetectionResult(detections, rotatedBitmap, imageProxy)
@@ -495,6 +790,7 @@ class CameraActivity : AppCompatActivity() {
                                     binding.overlayView.clear()
                                     binding.tvResultDesc.text = "주변을 탐색 중입니다..."
                                 }
+                                rotatedBitmap.recycle()
                                 imageProxy.close()
                             }
                         } catch (e: Exception) {
@@ -537,6 +833,7 @@ class CameraActivity : AppCompatActivity() {
             .filter { it.label.equals("bus_door", true) }
 
         val detection = bus ?: detections.maxByOrNull { it.score } ?: run {
+            rotatedBitmap.recycle()
             imageProxy.close()
             return
         }
@@ -569,6 +866,12 @@ class CameraActivity : AppCompatActivity() {
             category.equals("bus", true)
         ) {
             val busAreaRatio = getBoxAreaRatio(bbox, rotatedBitmap)
+            Log.i(
+                METRIC_TAG,
+                "ALGO_OCR_GATE target=$targetBusNumber busAreaRatio=${fmt(busAreaRatio.toDouble())} " +
+                    "threshold=$BUS_OCR_AREA_RATIO_THRESHOLD action=${if (busAreaRatio >= BUS_OCR_AREA_RATIO_THRESHOLD) "run_ocr" else "skip_ocr"} " +
+                    "busScore=$score doorCandidates=${doors.size}"
+            )
 
             if (busAreaRatio >= BUS_OCR_AREA_RATIO_THRESHOLD) {
                 handleBusOcr(
@@ -593,6 +896,7 @@ class CameraActivity : AppCompatActivity() {
                     binding.tvResultDesc.text = descText
                 }
 
+                rotatedBitmap.recycle()
                 imageProxy.close()
             }
         } else {
@@ -614,6 +918,7 @@ class CameraActivity : AppCompatActivity() {
                 saveToDatabase(category)
             }
 
+            rotatedBitmap.recycle()
             imageProxy.close()
         }
     }
@@ -629,6 +934,7 @@ class CameraActivity : AppCompatActivity() {
         imageProxy: androidx.camera.core.ImageProxy
     ) {
         if (isOcrProcessing) {
+            rotatedBitmap.recycle()
             imageProxy.close()
             return
         }
@@ -642,6 +948,7 @@ class CameraActivity : AppCompatActivity() {
 
         if (width <= 0 || height <= 0) {
             isOcrProcessing = false
+            rotatedBitmap.recycle()
             imageProxy.close()
             return
         }
@@ -655,12 +962,26 @@ class CameraActivity : AppCompatActivity() {
         )
 
         val inputImage = InputImage.fromBitmap(croppedBitmap, 0)
+        val ocrStartNs = SystemClock.elapsedRealtimeNanos()
+
+        Log.i(
+            METRIC_TAG,
+            "OCR_START target=$targetBusNumber crop=${width}x$height busBox=${rectToLog(bbox)} doorCandidates=${doors.size}"
+        )
 
         textRecognizer.process(inputImage)
             .addOnSuccessListener { visionText ->
                 val recognizedText = visionText.text.replace(Regex("\\s"), "")
+                val isTargetMatched =
+                    !targetBusNumber.isNullOrEmpty() && recognizedText.contains(targetBusNumber!!)
 
-                if (!targetBusNumber.isNullOrEmpty() && recognizedText.contains(targetBusNumber!!)) {
+                Log.i(
+                    METRIC_TAG,
+                    "OCR_RESULT target=$targetBusNumber matched=$isTargetMatched " +
+                        "textLength=${recognizedText.length} text=$recognizedText"
+                )
+
+                if (isTargetMatched) {
                     val plateBox = findTargetTextBox(
                         visionText = visionText,
                         targetBusNumber = targetBusNumber!!,
@@ -673,12 +994,25 @@ class CameraActivity : AppCompatActivity() {
                     } else {
                         null
                     }
+                    val frontDoorDistancePx = if (plateBox != null && frontDoor != null) {
+                        distanceBetweenBoxes(plateBox, frontDoor.box)
+                    } else {
+                        null
+                    }
 
                     val frontDoorDirection = if (frontDoor != null) {
                         getDirectionFromBox(frontDoor.box, rotatedBitmap.width.toFloat())
                     } else {
                         direction
                     }
+
+                    Log.i(
+                        METRIC_TAG,
+                        "ALGO_FRONT_DOOR target=$targetBusNumber plateBox=${rectToLog(plateBox)} " +
+                            "doorCandidates=${doors.size} selectedDoor=${rectToLog(frontDoor?.box)} " +
+                            "distancePx=${frontDoorDistancePx?.let { fmt(it.toDouble()) } ?: "none"} " +
+                            "direction=$frontDoorDirection"
+                    )
 
                     val descText =
                         "(TTS) $targetBusNumber 번, 타겟 버스가 감지되었습니다. 앞문은 $frontDoorDirection 방향입니다."
@@ -712,6 +1046,11 @@ class CameraActivity : AppCompatActivity() {
                         saveToDatabase("버스 승차 ($targetBusNumber)")
                     }
                 } else {
+                    Log.i(
+                        METRIC_TAG,
+                        "ALGO_FRONT_DOOR target=$targetBusNumber skipped=target_not_matched doorCandidates=${doors.size}"
+                    )
+
                     runOnUiThread {
                         binding.overlayView.setBoxInfo(
                             mappedBox,
@@ -723,6 +1062,7 @@ class CameraActivity : AppCompatActivity() {
                 }
             }
             .addOnFailureListener { e ->
+                Log.e(METRIC_TAG, "OCR_FAILURE target=$targetBusNumber message=${e.message}", e)
                 Log.e(TAG, "OCR 실패", e)
                 runOnUiThread {
                     binding.overlayView.setBoxInfo(
@@ -734,9 +1074,19 @@ class CameraActivity : AppCompatActivity() {
                 }
             }
             .addOnCompleteListener {
+                val ocrTimeMs = (SystemClock.elapsedRealtimeNanos() - ocrStartNs) / 1_000_000.0
+                logOcrMetrics(ocrTimeMs)
                 isOcrProcessing = false
+                croppedBitmap.recycle()
+                rotatedBitmap.recycle()
                 imageProxy.close()
             }
+    }
+
+    private fun rectToLog(rect: RectF?): String {
+        if (rect == null) return "none"
+
+        return "(${rect.left.toInt()},${rect.top.toInt()},${rect.right.toInt()},${rect.bottom.toInt()})"
     }
 
     private fun getBoxAreaRatio(box: RectF, bitmap: Bitmap): Float {
@@ -831,6 +1181,7 @@ class CameraActivity : AppCompatActivity() {
         tts?.stop()
         tts?.shutdown()
         interpreter.close()
+        gpuDelegate?.close()
         textRecognizer.close()
     }
 }
