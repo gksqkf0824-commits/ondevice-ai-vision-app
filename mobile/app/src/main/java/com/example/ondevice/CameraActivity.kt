@@ -24,6 +24,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
@@ -723,6 +724,45 @@ class CameraActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * [최적화] ImageProxy.toBitmap() 대신 RGBA_8888 단일 plane을 직접 복사합니다.
+     * rowStride 패딩이 있으면 행 단위로만 디패딩하여 불필요한 변환·복사를 줄입니다.
+     */
+    private fun imageProxyToRgbaBitmap(imageProxy: ImageProxy): Bitmap {
+        val plane = imageProxy.planes[0]
+        val buffer = plane.buffer.duplicate()
+        buffer.rewind()
+
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+        val width = imageProxy.width
+        val height = imageProxy.height
+
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+
+        if (pixelStride == 4 && rowStride == width * 4) {
+            bitmap.copyPixelsFromBuffer(buffer)
+            return bitmap
+        }
+
+        val row = ByteArray(rowStride)
+        val rowPixels = IntArray(width)
+        for (y in 0 until height) {
+            buffer.get(row)
+            var o = 0
+            for (x in 0 until width) {
+                val r = row[o].toInt() and 0xFF
+                val g = row[o + 1].toInt() and 0xFF
+                val b = row[o + 2].toInt() and 0xFF
+                val a = row[o + 3].toInt() and 0xFF
+                rowPixels[x] = (a shl 24) or (r shl 16) or (g shl 8) or b
+                o += pixelStride
+            }
+            bitmap.setPixels(rowPixels, 0, width, 0, y, width, 1)
+        }
+        return bitmap
+    }
+
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
@@ -748,7 +788,7 @@ class CameraActivity : AppCompatActivity() {
                         val frameStartNs = SystemClock.elapsedRealtimeNanos()
 
                         try {
-                            val bitmap = imageProxy.toBitmap()
+                            val bitmap = imageProxyToRgbaBitmap(imageProxy)
 
                             // [최적화 수정] 매트릭스 객체를 매 프레임 생성하지 않고 미리 만들어둔 객체 재사용
                             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
