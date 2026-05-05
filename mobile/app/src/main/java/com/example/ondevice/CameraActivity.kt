@@ -66,7 +66,11 @@ class CameraActivity : AppCompatActivity() {
 
         // 알고리즘 1:
         // 사용자 화면 기준 bus bounding box 면적이 전체 화면의 40% 이상일 때만 OCR 수행
-        private const val BUS_OCR_AREA_RATIO_THRESHOLD = 0.4f
+        private const val BUS_OCR_AREA_RATIO_THRESHOLD = 0.12f
+        private const val OCR_MIN_INTERVAL_MS = 1200L
+        private const val OCR_CROP_PADDING_RATIO = 0.12f
+        private const val OCR_MIN_CROP_LONG_SIDE = 960
+        private const val OCR_MAX_UPSCALE = 3.0f
 
         private const val MODEL_ASSET_NAME = "BusProject_v11n_best_320_full_int8.tflite"
         private const val ANALYSIS_TARGET_WIDTH = 320
@@ -102,6 +106,7 @@ class CameraActivity : AppCompatActivity() {
     private var isScanning = false
     private var isOcrProcessing = false
     private var lastSavedTimestamp = 0L
+    private var lastOcrRequestTimestamp = 0L
     private var lastFrameTimestampMs = 0L
     private var processedFrameCount = 0
     private var fpsSum = 0.0
@@ -349,7 +354,9 @@ class CameraActivity : AppCompatActivity() {
         ocrCount = 0
         ocrMsSum = 0.0
         maxOcrMs = 0.0
+        lastOcrRequestTimestamp = 0L
         Log.i(METRIC_TAG, "METRICS_RESET target=$targetBusNumber")
+        logDeviceInfo()
         logBenchmarkConfig()
     }
 
@@ -882,6 +889,12 @@ class CameraActivity : AppCompatActivity() {
         val score = (detection.score * 100).toInt()
         val bbox = detection.box
 
+        Log.i(
+            METRIC_TAG,
+            "DETECTION_SELECTED target=${targetBusNumber ?: "none"} category=$category score=$score " +
+                "box=${rectToLog(bbox)} total=${detections.size} buses=${if (bus != null) 1 else 0} doors=${doors.size}"
+        )
+
         val imgWidth = rotatedBitmap.width.toFloat()
         val centerX = bbox.centerX()
 
@@ -979,12 +992,23 @@ class CameraActivity : AppCompatActivity() {
             return
         }
 
+        val nowMs = SystemClock.elapsedRealtime()
+        if (nowMs - lastOcrRequestTimestamp < OCR_MIN_INTERVAL_MS) {
+            rotatedBitmap.recycle()
+            imageProxy.close()
+            return
+        }
+        lastOcrRequestTimestamp = nowMs
         isOcrProcessing = true
 
-        val left = max(0, bbox.left.toInt())
-        val top = max(0, bbox.top.toInt())
-        val width = min(rotatedBitmap.width - left, bbox.width().toInt())
-        val height = min(rotatedBitmap.height - top, bbox.height().toInt())
+        val paddingX = bbox.width() * OCR_CROP_PADDING_RATIO
+        val paddingY = bbox.height() * OCR_CROP_PADDING_RATIO
+        val left = max(0, (bbox.left - paddingX).toInt())
+        val top = max(0, (bbox.top - paddingY).toInt())
+        val right = min(rotatedBitmap.width, (bbox.right + paddingX).toInt())
+        val bottom = min(rotatedBitmap.height, (bbox.bottom + paddingY).toInt())
+        val width = right - left
+        val height = bottom - top
 
         if (width <= 0 || height <= 0) {
             isOcrProcessing = false
@@ -1001,24 +1025,29 @@ class CameraActivity : AppCompatActivity() {
             height
         )
 
-        val inputImage = InputImage.fromBitmap(croppedBitmap, 0)
+        val ocrBitmap = upscaleBitmapForOcr(croppedBitmap)
+        val inputImage = InputImage.fromBitmap(ocrBitmap, 0)
         val ocrStartNs = SystemClock.elapsedRealtimeNanos()
 
         Log.i(
             METRIC_TAG,
-            "OCR_START target=$targetBusNumber crop=${width}x$height busBox=${rectToLog(bbox)} doorCandidates=${doors.size}"
+            "OCR_START target=$targetBusNumber crop=${width}x$height ocrBitmap=${ocrBitmap.width}x${ocrBitmap.height} " +
+                "busBox=${rectToLog(bbox)} doorCandidates=${doors.size}"
         )
 
         textRecognizer.process(inputImage)
             .addOnSuccessListener { visionText ->
                 val recognizedText = visionText.text.replace(Regex("\\s"), "")
-                val isTargetMatched =
-                    !targetBusNumber.isNullOrEmpty() && recognizedText.contains(targetBusNumber!!)
+                val normalizedText = normalizeOcrText(visionText.text)
+                val isTargetMatched = targetBusNumber
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { doesOcrTextMatchTarget(visionText.text, it) }
+                    ?: false
 
                 Log.i(
                     METRIC_TAG,
                     "OCR_RESULT target=$targetBusNumber matched=$isTargetMatched " +
-                        "textLength=${recognizedText.length} text=$recognizedText"
+                        "textLength=${recognizedText.length} normalized=$normalizedText text=$recognizedText"
                 )
 
                 if (isTargetMatched) {
@@ -1117,6 +1146,9 @@ class CameraActivity : AppCompatActivity() {
                 val ocrTimeMs = (SystemClock.elapsedRealtimeNanos() - ocrStartNs) / 1_000_000.0
                 logOcrMetrics(ocrTimeMs)
                 isOcrProcessing = false
+                if (ocrBitmap != croppedBitmap) {
+                    ocrBitmap.recycle()
+                }
                 croppedBitmap.recycle()
                 rotatedBitmap.recycle()
                 imageProxy.close()
@@ -1138,19 +1170,65 @@ class CameraActivity : AppCompatActivity() {
         return boxArea / imageArea
     }
 
+    private fun upscaleBitmapForOcr(bitmap: Bitmap): Bitmap {
+        val longSide = max(bitmap.width, bitmap.height)
+        if (longSide >= OCR_MIN_CROP_LONG_SIDE) {
+            return bitmap
+        }
+
+        val scale = min(
+            OCR_MAX_UPSCALE,
+            OCR_MIN_CROP_LONG_SIDE.toFloat() / max(1, longSide).toFloat()
+        )
+        val scaledWidth = max(1, (bitmap.width * scale).roundToInt())
+        val scaledHeight = max(1, (bitmap.height * scale).roundToInt())
+
+        return Bitmap.createScaledBitmap(bitmap, scaledWidth, scaledHeight, true)
+    }
+
+    private fun normalizeOcrText(text: String): String {
+        return text
+            .uppercase(Locale.US)
+            .replace(Regex("\\s"), "")
+            .replace("O", "0")
+            .replace("Q", "0")
+            .replace("I", "1")
+            .replace("L", "1")
+            .replace("|", "1")
+            .replace("S", "5")
+            .replace("B", "8")
+    }
+
+    private fun normalizeOcrDigits(text: String): String {
+        return normalizeOcrText(text).filter { it.isDigit() }
+    }
+
+    private fun doesOcrTextMatchTarget(
+        recognizedText: String,
+        targetBusNumber: String
+    ): Boolean {
+        val normalizedText = normalizeOcrText(recognizedText)
+        val normalizedTarget = normalizeOcrText(targetBusNumber)
+
+        if (normalizedTarget.isNotEmpty() && normalizedText.contains(normalizedTarget)) {
+            return true
+        }
+
+        val recognizedDigits = normalizeOcrDigits(recognizedText)
+        val targetDigits = normalizeOcrDigits(targetBusNumber)
+
+        return targetDigits.length >= 2 && recognizedDigits.contains(targetDigits)
+    }
+
     private fun findTargetTextBox(
         visionText: Text,
         targetBusNumber: String,
         cropLeft: Int,
         cropTop: Int
     ): RectF? {
-        val normalizedTarget = targetBusNumber.replace(Regex("\\s"), "")
-
         for (block in visionText.textBlocks) {
             for (line in block.lines) {
-                val lineText = line.text.replace(Regex("\\s"), "")
-
-                if (lineText.contains(normalizedTarget)) {
+                if (doesOcrTextMatchTarget(line.text, targetBusNumber)) {
                     val box = line.boundingBox ?: continue
 
                     return RectF(
