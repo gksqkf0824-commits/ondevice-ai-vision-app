@@ -81,6 +81,24 @@ class CameraActivity : AppCompatActivity() {
         private const val BENCHMARK_TARGET_FRAME_MS = 100.0
         private const val BENCHMARK_TARGET_INFERENCE_MS = 66.0
         private const val BENCHMARK_TARGET_OCR_MS = 1000.0
+        // OCR 진행 중에도 완전히 멈추지 않고 저빈도로만 YOLO를 돌리기 위한 최소 간격 (ms)
+        private const val OCR_MODE_ANALYSIS_INTERVAL_MS = 300L
+
+        // --- 버스문 오탐 감소용 휴리스틱(코드 레벨 보완) ---
+        // bus bbox 안에 충분히 포함되는 door만 유지 (intersection / doorArea)
+        private const val DOOR_MIN_IOA_WITH_BUS = 0.55f
+        // bus bbox 대비 door bbox 면적 비율 범위
+        private const val DOOR_MIN_AREA_RATIO_TO_BUS = 0.01f
+        private const val DOOR_MAX_AREA_RATIO_TO_BUS = 0.40f
+        // door bbox 종횡비 범위 (width/height)
+        private const val DOOR_MIN_ASPECT_RATIO = 0.25f
+        private const val DOOR_MAX_ASPECT_RATIO = 2.50f
+        // door 최소 스코어(클래스 scoreThreshold=0.4f 보다 조금 엄격)
+        private const val DOOR_MIN_SCORE = 0.45f
+
+        // 앞문 선택 스무딩(짧은 시간 내 선택 유지)
+        private const val FRONT_DOOR_SMOOTHING_WINDOW_MS = 1400L
+        private const val FRONT_DOOR_SMOOTHING_MIN_IOU = 0.30f
     }
 
     private lateinit var binding: ActivityCameraBinding
@@ -104,9 +122,12 @@ class CameraActivity : AppCompatActivity() {
 
     private var targetBusNumber: String? = null
     private var isScanning = false
-    private var isOcrProcessing = false
+    @Volatile private var isOcrProcessing = false
     private var lastSavedTimestamp = 0L
     private var lastOcrRequestTimestamp = 0L
+    private var lastOcrModeAnalysisTimestampMs = 0L
+    private var lastFrontDoorBox: RectF? = null
+    private var lastFrontDoorChosenTimestampMs = 0L
     private var lastFrameTimestampMs = 0L
     private var processedFrameCount = 0
     private var fpsSum = 0.0
@@ -685,6 +706,116 @@ class CameraActivity : AppCompatActivity() {
         return intersectionArea / unionArea
     }
 
+    private fun rectArea(rect: RectF): Float {
+        return max(0f, rect.width()) * max(0f, rect.height())
+    }
+
+    private fun intersectionArea(a: RectF, b: RectF): Float {
+        val intersectionLeft = max(a.left, b.left)
+        val intersectionTop = max(a.top, b.top)
+        val intersectionRight = min(a.right, b.right)
+        val intersectionBottom = min(a.bottom, b.bottom)
+
+        val w = max(0f, intersectionRight - intersectionLeft)
+        val h = max(0f, intersectionBottom - intersectionTop)
+        return w * h
+    }
+
+    private fun calculateIoA(intersectionOverThis: RectF, other: RectF): Float {
+        val inter = intersectionArea(intersectionOverThis, other)
+        val denom = rectArea(intersectionOverThis)
+        if (denom <= 0f) return 0f
+        return inter / denom
+    }
+
+    private fun filterBusDoorCandidates(
+        doors: List<DetectionResult>,
+        busBox: RectF,
+        imageWidth: Float,
+        imageHeight: Float
+    ): List<DetectionResult> {
+        if (doors.isEmpty()) return doors
+
+        val busArea = rectArea(busBox).coerceAtLeast(1f)
+        val busCx = busBox.centerX()
+        val busCy = busBox.centerY()
+
+        val filtered = doors.filter { door ->
+            if (door.score < DOOR_MIN_SCORE) return@filter false
+
+            val d = door.box
+            // 화면 밖으로 많이 나간 박스 제거(잡음 방지)
+            if (d.left < -imageWidth * 0.05f || d.top < -imageHeight * 0.05f ||
+                d.right > imageWidth * 1.05f || d.bottom > imageHeight * 1.05f
+            ) return@filter false
+
+            // bus bbox 안에 어느 정도 포함되는지 (intersection / doorArea)
+            val ioa = calculateIoA(d, busBox)
+            if (ioa < DOOR_MIN_IOA_WITH_BUS) return@filter false
+
+            // bus bbox 대비 면적 비율
+            val areaRatio = rectArea(d) / busArea
+            if (areaRatio < DOOR_MIN_AREA_RATIO_TO_BUS || areaRatio > DOOR_MAX_AREA_RATIO_TO_BUS) return@filter false
+
+            // 종횡비(문은 보통 너무 극단적으로 길쭉하지 않음)
+            val aspect = d.width() / max(1f, d.height())
+            if (aspect < DOOR_MIN_ASPECT_RATIO || aspect > DOOR_MAX_ASPECT_RATIO) return@filter false
+
+            // bus 중심과 너무 동떨어진 도어는 제거(전혀 관계 없는 오탐 방지)
+            val dx = kotlin.math.abs(d.centerX() - busCx) / max(1f, busBox.width())
+            val dy = kotlin.math.abs(d.centerY() - busCy) / max(1f, busBox.height())
+            if (dx > 0.9f || dy > 0.9f) return@filter false
+
+            true
+        }
+
+        return filtered
+    }
+
+    private fun selectFrontDoor(
+        plateBox: RectF,
+        doors: List<DetectionResult>,
+        busBox: RectF
+    ): DetectionResult? {
+        if (doors.isEmpty()) return null
+
+        val nowMs = SystemClock.elapsedRealtime()
+        val prev = lastFrontDoorBox
+        if (prev != null && (nowMs - lastFrontDoorChosenTimestampMs) <= FRONT_DOOR_SMOOTHING_WINDOW_MS) {
+            val bestMatchToPrev = doors.maxByOrNull { d -> calculateIou(prev, d.box) }
+            if (bestMatchToPrev != null && calculateIou(prev, bestMatchToPrev.box) >= FRONT_DOOR_SMOOTHING_MIN_IOU) {
+                // 직전 선택과 충분히 겹치면 그대로 유지 (프레임 간 흔들림 완화)
+                lastFrontDoorBox = RectF(bestMatchToPrev.box)
+                lastFrontDoorChosenTimestampMs = nowMs
+                return bestMatchToPrev
+            }
+        }
+
+        val plateCx = plateBox.centerX()
+        val busCx = busBox.centerX()
+        val busDiag = sqrt(busBox.width() * busBox.width() + busBox.height() * busBox.height()).coerceAtLeast(1f)
+
+        // plate와의 거리 + "앞문은 대체로 버스의 우측/전방" priors를 섞어 스코어링
+        val selected = doors.maxByOrNull { door ->
+            val d = door.box
+            val distNorm = distanceBetweenBoxes(plateBox, d) / busDiag
+
+            val rightOfPlatePenalty = if (d.centerX() < plateCx) 0.40f else 0f
+            val rightHalfPenalty = if (d.centerX() < busCx) 0.20f else 0f
+            val lowerHalfPenalty = if (d.centerY() < busBox.centerY()) 0.10f else 0f
+
+            // 높을수록 선택됨
+            (door.score * 2.0f) - (distNorm * 1.0f) - rightOfPlatePenalty - rightHalfPenalty - lowerHalfPenalty
+        }
+
+        if (selected != null) {
+            lastFrontDoorBox = RectF(selected.box)
+            lastFrontDoorChosenTimestampMs = nowMs
+        }
+
+        return selected
+    }
+
     private fun triggerStrongVibration() {
         val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
@@ -790,6 +921,18 @@ class CameraActivity : AppCompatActivity() {
                         if (!isScanning) {
                             imageProxy.close()
                             return@setAnalyzer
+                        }
+
+                        if (isOcrProcessing) {
+                            // OCR 모드에서는 완전히 멈추지 않고,
+                            // 일정 간격(OCR_MODE_ANALYSIS_INTERVAL_MS)으로만 분석을 수행합니다.
+                            val nowMs = SystemClock.elapsedRealtime()
+                            val elapsedSinceLastAnalyze = nowMs - lastOcrModeAnalysisTimestampMs
+                            if (elapsedSinceLastAnalyze < OCR_MODE_ANALYSIS_INTERVAL_MS) {
+                                imageProxy.close()
+                                return@setAnalyzer
+                            }
+                            lastOcrModeAnalysisTimestampMs = nowMs
                         }
 
                         val frameStartNs = SystemClock.elapsedRealtimeNanos()
@@ -914,19 +1057,28 @@ class CameraActivity : AppCompatActivity() {
             bbox.bottom * scaleY
         )
 
-        if (
-            !targetBusNumber.isNullOrEmpty() &&
-            category.equals("bus", true)
-        ) {
+        val allowOcrWithoutTarget = BuildConfig.DEBUG
+
+        if (category.equals("bus", true)) {
+            val filteredDoors = filterBusDoorCandidates(
+                doors = doors,
+                busBox = bbox,
+                imageWidth = rotatedBitmap.width.toFloat(),
+                imageHeight = rotatedBitmap.height.toFloat()
+            )
             val busAreaRatio = getBoxAreaRatio(bbox, rotatedBitmap)
             Log.i(
                 METRIC_TAG,
                 "ALGO_OCR_GATE target=$targetBusNumber busAreaRatio=${fmt(busAreaRatio.toDouble())} " +
                     "threshold=$BUS_OCR_AREA_RATIO_THRESHOLD action=${if (busAreaRatio >= BUS_OCR_AREA_RATIO_THRESHOLD) "run_ocr" else "skip_ocr"} " +
-                    "busScore=$score doorCandidates=${doors.size}"
+                    "busScore=$score doorCandidates=${doors.size} doorFiltered=${filteredDoors.size}"
             )
 
-            if (busAreaRatio >= BUS_OCR_AREA_RATIO_THRESHOLD) {
+            val shouldRunOcr =
+                busAreaRatio >= BUS_OCR_AREA_RATIO_THRESHOLD &&
+                    (allowOcrWithoutTarget || !targetBusNumber.isNullOrBlank())
+
+            if (shouldRunOcr) {
                 handleBusOcr(
                     category = category,
                     score = score,
@@ -934,7 +1086,7 @@ class CameraActivity : AppCompatActivity() {
                     mappedBox = mappedBox,
                     direction = direction,
                     rotatedBitmap = rotatedBitmap,
-                    doors = doors,
+                    doors = filteredDoors,
                     imageProxy = imageProxy
                 )
             } else {
@@ -953,14 +1105,55 @@ class CameraActivity : AppCompatActivity() {
                 imageProxy.close()
             }
         } else {
-            val descText = "전방 $direction 방향에 $category 가 감지되었습니다."
+            // 다중 탐지가 중요한 클래스(킥보드/볼라드)는 "선택된 1개 category"에 상관없이
+            // 프레임 내 탐지된 해당 객체들을 우선적으로 모두 표시합니다.
+            val multiDisplayLabels = setOf("kickboard", "bollard")
+            val multiItems = detections
+                .filter { it.label.lowercase(Locale.US) in multiDisplayLabels }
+                .sortedByDescending { it.score }
+
+            val itemsToShow = if (multiItems.isNotEmpty()) {
+                multiItems.take(10)
+            } else {
+                detections
+                    .filter { it.label.equals(category, true) }
+                    .sortedByDescending { it.score }
+                    .take(5)
+            }
+
+            val descText = when {
+                multiItems.isNotEmpty() -> {
+                    val kickboardCount = multiItems.count { it.label.equals("kickboard", true) }
+                    val bollardCount = multiItems.count { it.label.equals("bollard", true) }
+                    val parts = listOfNotNull(
+                        kickboardCount.takeIf { it > 0 }?.let { "kickboard ${it}개" },
+                        bollardCount.takeIf { it > 0 }?.let { "bollard ${it}개" }
+                    )
+                    "전방 $direction 방향에 ${parts.joinToString(", ")}가 감지되었습니다."
+                }
+                itemsToShow.size >= 2 -> "전방 $direction 방향에 $category ${itemsToShow.size}개가 감지되었습니다."
+                else -> "전방 $direction 방향에 $category 가 감지되었습니다."
+            }
 
             runOnUiThread {
-                binding.overlayView.setBoxInfo(
-                    mappedBox,
-                    Color.GREEN,
-                    "$category ($score%)"
-                )
+                if (itemsToShow.size >= 2) {
+                    val itemsForOverlay = itemsToShow.map { det ->
+                        val mapped = mapBoxToPreview(det.box, rotatedBitmap)
+                        OverlayView.BoxInfo(
+                            rect = mapped,
+                            color = Color.GREEN,
+                            text = "${det.label} (${(det.score * 100).toInt()}%)"
+                        )
+                    }
+                    binding.overlayView.setBoxesInfo(itemsForOverlay)
+                } else {
+                    binding.overlayView.setBoxInfo(
+                        mappedBox,
+                        Color.GREEN,
+                        "$category ($score%)"
+                    )
+                }
+
                 binding.tvResultDesc.text = descText
             }
 
@@ -1050,7 +1243,23 @@ class CameraActivity : AppCompatActivity() {
                         "textLength=${recognizedText.length} normalized=$normalizedText text=$recognizedText"
                 )
 
-                if (isTargetMatched) {
+                if (targetBusNumber.isNullOrBlank() && BuildConfig.DEBUG) {
+                    // 타겟이 없더라도 OCR 자체는 수행하여 동작 확인/디버깅 및 사용자 피드백에 활용합니다.
+                    val descText = if (recognizedText.isNotBlank()) {
+                        "OCR 결과: ${recognizedText.take(20)}"
+                    } else {
+                        "번호판 인식 중입니다..."
+                    }
+
+                    runOnUiThread {
+                        binding.overlayView.setBoxInfo(
+                            mappedBox,
+                            Color.GREEN,
+                            "bus ($score%)"
+                        )
+                        binding.tvResultDesc.text = descText
+                    }
+                } else if (isTargetMatched) {
                     val plateBox = findTargetTextBox(
                         visionText = visionText,
                         targetBusNumber = targetBusNumber!!,
@@ -1059,7 +1268,11 @@ class CameraActivity : AppCompatActivity() {
                     )
 
                     val frontDoor = if (plateBox != null) {
-                        findNearestDoor(plateBox, doors)
+                        selectFrontDoor(
+                            plateBox = plateBox,
+                            doors = doors,
+                            busBox = bbox
+                        )
                     } else {
                         null
                     }
