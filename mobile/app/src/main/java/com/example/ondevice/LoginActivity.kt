@@ -11,6 +11,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.example.ondevice.network.RetrofitClient
+import com.example.ondevice.network.LoginResponse
 
 class LoginActivity : AppCompatActivity() {
     private lateinit var binding: ActivityLoginBinding
@@ -34,36 +36,54 @@ class LoginActivity : AppCompatActivity() {
         }
 
         binding.btnLoginConfirm.setOnClickListener {
-            it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             val id = binding.etId.text.toString()
             val pw = binding.etPassword.text.toString()
 
             CoroutineScope(Dispatchers.IO).launch {
-                val user = database.userDao().login(id, pw)
-                withContext(Dispatchers.Main) {
-                    if (user!= null) {
-                        // 가입된 계정 유형과 누른 로그인 버튼의 유형이 다르면 막아냄
-                        if (user.userType!= loginType) {
-                            Toast.makeText(this@LoginActivity, "가입된 계정 유형과 다릅니다.", Toast.LENGTH_SHORT).show()
-                            return@withContext
+                try {
+                    val response = RetrofitClient.instance.login(id, pw) // 백엔드 호출
+
+                    // ✅ 1. 네트워크 응답 확인 및 DB 작업은 계속 IO 스레드에서 진행합니다.
+                    if (response.isSuccessful && response.body() != null) {
+                        val loginData = response.body()!!
+
+                        // 기존 로컬 DB에 유저가 있는지 확인 (재로그인 시 튕김 방지)
+                        val existingUser = database.userDao().getUser(loginData.username)
+
+                        if (existingUser == null) {
+                            val localUser = User(
+                                username = loginData.username,
+                                password = pw, // 로컬 캐싱용
+                                name = loginData.username, // 백엔드 응답에 이름이 없다면 임시로 아이디를 이름으로 사용
+                                role = loginData.role
+                            )
+                            database.userDao().insertUser(localUser)
                         }
 
-                        // 로그인 성공 시 기기에 내 정보 저장
-                        val sharedPref = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
-                        with(sharedPref.edit()) {
-                            putString("USER_ID", user.userId)
-                            putString("USER_NAME", user.name)
-                            putString("USER_TYPE", user.userType)
-                            putString("GUARDIAN_ID", user.guardianId)
-                            putString("ORG_NAME", user.orgName)
-                            apply()
-                        }
+                        // ✅ 2. 화면 이동, 토스트 메시지, SharedPreferences 등은 메인 스레드에서 진행합니다.
+                        withContext(Dispatchers.Main) {
+                            val sharedPref = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+                            with(sharedPref.edit()) {
+                                putString("USER_ID", loginData.username)
+                                putString("USER_TYPE", loginData.role)
+                                putString("ACCESS_TOKEN", loginData.token) // JWT 토큰 저장
+                                apply()
+                            }
 
-                        Toast.makeText(this@LoginActivity, "${user.name}님 환영합니다!", Toast.LENGTH_SHORT).show()
-                        startActivity(Intent(this@LoginActivity, MainActivity::class.java))
-                        finish()
+                            Toast.makeText(this@LoginActivity, "환영합니다!", Toast.LENGTH_SHORT).show()
+                            startActivity(Intent(this@LoginActivity, MainActivity::class.java))
+                            finish()
+                        }
                     } else {
-                        Toast.makeText(this@LoginActivity, "아이디 또는 비밀번호가 틀렸습니다.", Toast.LENGTH_SHORT).show()
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(this@LoginActivity, "아이디 또는 비밀번호가 틀렸습니다.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        // 에러 발생 시 로그캣에 진짜 원인을 찍어줍니다.
+                        android.util.Log.e("LoginError", "로그인 실패: ", e)
+                        Toast.makeText(this@LoginActivity, "서버 연결 실패: ${e.message}", Toast.LENGTH_SHORT).show()
                     }
                 }
             }

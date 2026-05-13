@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.example.ondevice.network.RetrofitClient
 
 class SignupActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySignupBinding
@@ -31,60 +32,43 @@ class SignupActivity : AppCompatActivity() {
 
         // 회원가입 확인 버튼
         binding.btnSignup.setOnClickListener {
-            it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-
-            val orgName = binding.etOrgName.text.toString()
-            val name = binding.etName.text.toString()
-            val id = binding.etId.text.toString()
-            val pw = binding.etPassword.text.toString()
-            val pwConfirm = binding.etPasswordConfirm.text.toString()
-
-            // 공통 필수값 체크
-            if (id.isEmpty() || pw.isEmpty() || pwConfirm.isEmpty()) {
-            Toast.makeText(this, "필수 항목을 모두 입력해주세요.", Toast.LENGTH_SHORT).show()
-            return@setOnClickListener
-        }
-
-            // 기관이나 보호자일 때 추가 필수값 체크
-            if (selectedType!= "PERSONAL" && (orgName.isEmpty() || name.isEmpty())) {
-            Toast.makeText(this, "기관명과 이름을 입력해주세요.", Toast.LENGTH_SHORT).show()
-            return@setOnClickListener
-        }
-
-            if (pw!= pwConfirm) {
-                Toast.makeText(this, "비밀번호가 일치하지 않습니다.", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
+            val user = User(
+                username = binding.etId.text.toString(), // 필드명 변경
+                password = binding.etPassword.text.toString(),
+                name = binding.etName.text.toString(),
+                role = selectedType, // userType 대신 role 사용
+                orgName = binding.etOrgName.text.toString()
+            )
 
             CoroutineScope(Dispatchers.IO).launch {
-                val existingUser = database.userDao().checkIdExist(id)
-                if (existingUser!= null) {
-                    withContext(Dispatchers.Main) { Toast.makeText(this@SignupActivity, "이미 존재하는 아이디입니다.", Toast.LENGTH_SHORT).show() }
-                } else {
-                    // 💡 수정된 부분: 이름에 기관명을 합치던 예전 꼼수를 지우고,
-                    // DB의 orgName 칸에 기관명을 정식으로 따로 분리해서 저장합니다!
-                    val finalOrgName = if (selectedType == "PERSONAL") null else orgName
-                    val finalName = if (selectedType == "PERSONAL") "개인사용자" else name
-
-                    database.userDao().insertUser(
-                        User(
-                            userId = id,
-                            name = finalName,
-                            password = pw,
-                            userType = selectedType,
-                            orgName = finalOrgName
-                        )
-                    )
+                try {
+                    val response = when (selectedType) { // 유형별 API 호출
+                        "PERSONAL" -> RetrofitClient.instance.signupPersonal(user)
+                        "ORG" -> RetrofitClient.instance.signupCompany(user)
+                        "GUARDIAN" -> RetrofitClient.instance.signupGuardian(user)
+                        else -> null
+                    }
 
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(this@SignupActivity, "회원가입 성공!", Toast.LENGTH_SHORT).show()
-                        finish()
+                        if (response?.isSuccessful == true) {
+                            Toast.makeText(this@SignupActivity, "회원가입 성공!", Toast.LENGTH_SHORT).show()
+                            finish()
+                        } else {
+                            // 백엔드에서 보내준 실제 에러 메시지
+                            val errorBody = response?.errorBody()?.string() ?: "알 수 없는 에러"
+                            Toast.makeText(this@SignupActivity, "가입 실패: $errorBody", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        // "네트워크 오류" 대신 실제 에러 메시지
+                        Toast.makeText(this@SignupActivity, "에러: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                        e.printStackTrace() // Logcat에서 상세 내용을 보기 위함
                     }
                 }
             }
         }
 
-        // 취소 버튼
         binding.btnCancel.setOnClickListener {
             it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             finish()

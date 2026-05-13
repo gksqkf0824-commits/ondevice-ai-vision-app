@@ -14,10 +14,10 @@ interface HistoryDao {
     fun searchHistoryForUser(userId: String, searchQuery: String): List<History>
 
     // 💡 2. 보호자용: 내 아이디를 보호자로 등록해둔 하위 사용자들의 기록만 가져오기 (Subquery 활용)
-    @Query("SELECT * FROM history_table WHERE userName IN (SELECT userId FROM user_table WHERE guardianId = :guardianId) ORDER BY timestamp DESC")
+    @Query("SELECT * FROM history_table WHERE userName IN (SELECT username FROM user_table WHERE guardianId = :guardianId) ORDER BY timestamp DESC")
     fun getHistoryForGuardian(guardianId: String): List<History>
 
-    @Query("SELECT * FROM history_table WHERE userName IN (SELECT userId FROM user_table WHERE guardianId = :guardianId) AND (userName LIKE '%' || :searchQuery || '%' OR objectName LIKE '%' || :searchQuery || '%') ORDER BY timestamp DESC")
+    @Query("SELECT * FROM history_table WHERE userName IN (SELECT username FROM user_table WHERE guardianId = :guardianId) AND (userName LIKE '%' || :searchQuery || '%' OR objectName LIKE '%' || :searchQuery || '%') ORDER BY timestamp DESC")
     fun searchHistoryForGuardian(guardianId: String, searchQuery: String): List<History>
 
     @Insert

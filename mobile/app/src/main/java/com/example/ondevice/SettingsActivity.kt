@@ -29,18 +29,23 @@ class SettingsActivity : AppCompatActivity() {
         database = AppDatabase.getDatabase(this)
 
         val sharedPref = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
-        val userId = sharedPref.getString("USER_ID", "알 수 없음")?: ""
-        val userName = sharedPref.getString("USER_NAME", "설정 안 함")
-        val userType = sharedPref.getString("USER_TYPE", "PERSONAL")
-        val orgName = sharedPref.getString("ORG_NAME", "설정 안 함")
-        val guardianId = sharedPref.getString("GUARDIAN_ID", null)
+        val userId = sharedPref.getString("USER_ID", "") ?: ""
 
-        // 내 정보 세팅
-        binding.tvOrgValue.text = if (userType == "PERSONAL") "미소속" else orgName
-        binding.tvNameValue.text = userName
+        if (userId.isNotEmpty()) {
+            CoroutineScope(Dispatchers.IO).launch {
+                val myInfo = database.userDao().getUser(userId)
 
-        // 💡 연동된 보호자가 있으면 DB에서 이름을 찾아 UI를 바꿉니다
-        updateGuardianUI(guardianId)
+                withContext(Dispatchers.Main) {
+                    if (myInfo != null) {
+                        binding.tvNameValue.text = myInfo.name
+                        binding.tvOrgValue.text = if (myInfo.role == "PERSONAL") "미소속" else (myInfo.orgName ?: "미소속")
+
+                        // 내 정보에 저장된 보호자 아이디로 연동 UI 업데이트
+                        updateGuardianUI(myInfo.guardianId)
+                    }
+                }
+            }
+        }
 
         // 보호자 연동 버튼 로직
         binding.btnLinkGuardian.setOnClickListener { view ->
@@ -81,24 +86,23 @@ class SettingsActivity : AppCompatActivity() {
         })
     }
 
-    // 💡 보호자 아이디를 통해 실제 이름을 DB에서 가져와 UI를 업데이트하는 함수
     private fun updateGuardianUI(guardianId: String?) {
-        if (guardianId!= null) {
+        if (!guardianId.isNullOrEmpty()) {
             CoroutineScope(Dispatchers.IO).launch {
                 val guardianUser = database.userDao().getUser(guardianId)
                 withContext(Dispatchers.Main) {
-                    if (guardianUser!= null) {
+                    if (guardianUser != null) {
                         // 연동 버튼 숨기고 이름/번호 표시
                         binding.layoutUnlinkedGuardian.visibility = View.GONE
                         binding.layoutLinkedGuardian.visibility = View.VISIBLE
                         binding.tvGuardianNameValue.text = guardianUser.name
-                        // 전화번호는 현재 DB에 없으므로 피그마 디자인처럼 고정값 표시
+                        // 전화번호는 현재 DB에 없으므로 고정값 표시
                         binding.tvGuardianPhoneValue.text = "080-098-1004"
                     }
                 }
             }
         } else {
-            // 보호자가 없으면 버튼 표시
+            // 보호자가 없으면 연동 버튼 표시
             binding.layoutUnlinkedGuardian.visibility = View.VISIBLE
             binding.layoutLinkedGuardian.visibility = View.GONE
         }
@@ -109,21 +113,21 @@ class SettingsActivity : AppCompatActivity() {
 
         CoroutineScope(Dispatchers.IO).launch {
             val guardianUser = database.userDao().getUser(targetGuardianId)
-            withContext(Dispatchers.Main) {
-                if (guardianUser!= null && guardianUser.userType == "GUARDIAN") {
 
-                    CoroutineScope(Dispatchers.IO).launch {
-                        database.userDao().linkGuardian(myId, targetGuardianId)
-                    }
+            if (guardianUser != null && guardianUser.role == "GUARDIAN") {
+                // DB 업데이트 수행
+                database.userDao().linkGuardian(myId, targetGuardianId)
 
+                withContext(Dispatchers.Main) {
                     val sharedPref = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
                     sharedPref.edit().putString("GUARDIAN_ID", targetGuardianId).apply()
 
-                    // 💡 연동 성공 즉시 화면에 보호자 이름이 뜨도록 업데이트!
+                    // UI 업데이트
                     updateGuardianUI(targetGuardianId)
                     Toast.makeText(this@SettingsActivity, "보호자 연동 성공!", Toast.LENGTH_SHORT).show()
-
-                } else {
+                }
+            } else {
+                withContext(Dispatchers.Main) {
                     Toast.makeText(this@SettingsActivity, "해당 아이디의 보호자를 찾을 수 없습니다.", Toast.LENGTH_SHORT).show()
                 }
             }

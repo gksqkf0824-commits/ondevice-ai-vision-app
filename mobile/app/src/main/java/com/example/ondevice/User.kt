@@ -5,10 +5,11 @@ import androidx.room.PrimaryKey
 
 @Entity(tableName = "user_table")
 data class User(
-    @PrimaryKey val userId: String,
-    val name: String,
+    @PrimaryKey
+    val username: String,
     val password: String,
-    val userType: String = "PERSONAL", // PERSONAL, ORG, GUARDIAN
-    val guardianId: String? = null  ,  // 연동된 보호자의 아이디
-    val orgName: String? = null        // 기관명 전용 칸
+    val name: String,
+    val role: String,
+    val orgName: String? = null,
+    val guardianId: String? = null
 )
