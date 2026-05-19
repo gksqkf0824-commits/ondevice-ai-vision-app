@@ -8,6 +8,10 @@ android {
     namespace = "com.example.ondevice"
     compileSdk = 36
 
+    androidResources {
+        noCompress += "tflite"
+    }
+
     buildFeatures {
         viewBinding = true
         mlModelBinding = true

@@ -5,8 +5,10 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Paint
 import android.graphics.RectF
 import android.os.Build
 import android.os.Bundle
@@ -72,9 +74,9 @@ class CameraActivity : AppCompatActivity() {
         private const val OCR_MIN_CROP_LONG_SIDE = 960
         private const val OCR_MAX_UPSCALE = 3.0f
 
-        private const val MODEL_ASSET_NAME = "BusProject_v11n_best_320_full_int8.tflite"
-        private const val ANALYSIS_TARGET_WIDTH = 320
-        private const val ANALYSIS_TARGET_HEIGHT = 320
+        private const val MODEL_ASSET_NAME = "best_full_integer_quant.tflite"
+        private const val ANALYSIS_TARGET_WIDTH = 512
+        private const val ANALYSIS_TARGET_HEIGHT = 512
         private const val BENCHMARK_FRAME_WINDOW = 10
         private const val PERF_FRAME_LOG_INTERVAL = 10
         private const val BENCHMARK_TARGET_FPS = 15.0
@@ -146,16 +148,24 @@ class CameraActivity : AppCompatActivity() {
     private var modelInputSize = 640
     private var candidateCount = 8400
     private val scoreThreshold = 0.4f
+    private val bollardScoreThreshold = 0.3f
     private val iouThreshold = 0.45f
-    private val maxDetections = 20
-    private val maxNmsCandidates = 120
+    private val maxDetections = 30
+    private val maxNmsCandidates = 160
 
     // --- [최적화 추가] 프레임 단위 가비지 컬렉터(GC) 호출 방지를 위한 메모리 사전 할당 ---
     private lateinit var inputBuffer: ByteBuffer
     private lateinit var pixels: IntArray
+    private lateinit var modelInputBitmap: Bitmap
+    private lateinit var modelInputCanvas: Canvas
     private var outputFloatArray: Array<Array<FloatArray>>? = null
     private var outputByteBuffer: ByteBuffer? = null
     private val frameMatrix = Matrix()
+    private val preprocessMatrix = Matrix()
+    private val preprocessPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private var lastInputScale = 1f
+    private var lastInputPadX = 0f
+    private var lastInputPadY = 0f
 
     data class DetectionResult(
         val label: String,
@@ -316,6 +326,8 @@ class CameraActivity : AppCompatActivity() {
             order(ByteOrder.nativeOrder())
         }
         pixels = IntArray(modelInputSize * modelInputSize)
+        modelInputBitmap = Bitmap.createBitmap(modelInputSize, modelInputSize, Bitmap.Config.ARGB_8888)
+        modelInputCanvas = Canvas(modelInputBitmap)
 
         if (outputDataType == DataType.FLOAT32) {
             outputFloatArray = Array(1) { Array(4 + labels.size) { FloatArray(candidateCount) } }
@@ -496,12 +508,29 @@ class CameraActivity : AppCompatActivity() {
     }
 
     private fun bitmapToInputBuffer(bitmap: Bitmap): ByteBuffer {
-        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, modelInputSize, modelInputSize, true)
+        val scale = min(
+            modelInputSize.toFloat() / bitmap.width.toFloat(),
+            modelInputSize.toFloat() / bitmap.height.toFloat()
+        )
+        val scaledWidth = bitmap.width * scale
+        val scaledHeight = bitmap.height * scale
+        val padX = (modelInputSize - scaledWidth) / 2f
+        val padY = (modelInputSize - scaledHeight) / 2f
+
+        lastInputScale = scale
+        lastInputPadX = padX
+        lastInputPadY = padY
+
+        modelInputBitmap.eraseColor(Color.rgb(114, 114, 114))
+        preprocessMatrix.reset()
+        preprocessMatrix.postScale(scale, scale)
+        preprocessMatrix.postTranslate(padX, padY)
+        modelInputCanvas.drawBitmap(bitmap, preprocessMatrix, preprocessPaint)
 
         // [최적화 수정] 매번 allocate 하지 않고 기존 버퍼를 초기화 후 재사용
         inputBuffer.rewind()
 
-        resizedBitmap.getPixels(
+        modelInputBitmap.getPixels(
             pixels,
             0,
             modelInputSize,
@@ -519,10 +548,7 @@ class CameraActivity : AppCompatActivity() {
 
         inputBuffer.rewind()
         
-        // [최적화 추가] 리사이즈용으로 생성된 임시 비트맵 즉시 파기 (메모리 확보)
-        if (resizedBitmap != bitmap) {
-            resizedBitmap.recycle()
-        }
+        // Reuses the preallocated letterbox bitmap to avoid per-frame bitmap churn.
         
         return inputBuffer
     }
@@ -587,8 +613,8 @@ class CameraActivity : AppCompatActivity() {
                 }
             }
 
-            if (bestScore < scoreThreshold) continue
             if (bestClassId !in labels.indices) continue
+            if (bestScore < scoreThresholdFor(bestClassId)) continue
 
             val looksNormalized = cx <= 1.5f && cy <= 1.5f && w <= 1.5f && h <= 1.5f
 
@@ -599,18 +625,15 @@ class CameraActivity : AppCompatActivity() {
                 h *= modelInputSize
             }
 
-            val x1 = cx - w / 2f
-            val y1 = cy - h / 2f
-            val x2 = cx + w / 2f
-            val y2 = cy + h / 2f
+            val x1 = (cx - w / 2f - lastInputPadX) / lastInputScale
+            val y1 = (cy - h / 2f - lastInputPadY) / lastInputScale
+            val x2 = (cx + w / 2f - lastInputPadX) / lastInputScale
+            val y2 = (cy + h / 2f - lastInputPadY) / lastInputScale
 
-            val scaleXToOriginal = imgWidth / modelInputSize.toFloat()
-            val scaleYToOriginal = imgHeight / modelInputSize.toFloat()
-
-            val left = (x1 * scaleXToOriginal).coerceIn(0f, imgWidth)
-            val top = (y1 * scaleYToOriginal).coerceIn(0f, imgHeight)
-            val right = (x2 * scaleXToOriginal).coerceIn(0f, imgWidth)
-            val bottom = (y2 * scaleYToOriginal).coerceIn(0f, imgHeight)
+            val left = x1.coerceIn(0f, imgWidth)
+            val top = y1.coerceIn(0f, imgHeight)
+            val right = x2.coerceIn(0f, imgWidth)
+            val bottom = y2.coerceIn(0f, imgHeight)
 
             if (right <= left || bottom <= top) continue
 
@@ -635,6 +658,14 @@ class CameraActivity : AppCompatActivity() {
             .take(maxDetections)
 
         return nmsResults
+    }
+
+    private fun scoreThresholdFor(classId: Int): Float {
+        return if (labels.getOrNull(classId).equals("bollard", ignoreCase = true)) {
+            bollardScoreThreshold
+        } else {
+            scoreThreshold
+        }
     }
 
     private fun getOutputValue(channel: Int, candidateIndex: Int): Float {
