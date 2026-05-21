@@ -3,7 +3,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#FFEB3B"
+    android:background="@color/app_black"
     android:padding="24dp">
 
     <LinearLayout
@@ -19,7 +19,7 @@
             android:text="&lt;"
             android:textSize="40sp"
             android:background="#00000000"
-            android:textColor="#000000"
+            android:textColor="@color/white"
             android:contentDescription="뒤로 가기" />
         <TextView
             android:layout_width="wrap_content"
@@ -27,28 +27,28 @@
             android:text="설정"
             android:textSize="32sp"
             android:textStyle="bold"
-            android:textColor="#000000"
+            android:textColor="@color/white"
             android:layout_marginStart="8dp"/>
     </LinearLayout>
 
-    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="사용자 정보 📝" android:textSize="14sp" android:textColor="#333333" android:layout_marginBottom="8dp"/>
-    <View android:layout_width="match_parent" android:layout_height="2dp" android:background="#000000" android:layout_marginBottom="16dp"/>
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="사용자 정보 📝" android:textSize="14sp" android:textColor="@color/app_gray" android:layout_marginBottom="8dp"/>
+    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#22FFFFFF" android:layout_marginBottom="16dp"/>
 
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
-        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="기관명" android:textSize="18sp" android:textColor="#000000" android:textStyle="bold"/>
-        <TextView android:id="@+id/tvOrgValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="미소속" android:textSize="18sp" android:textColor="#000000"/>
+        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="기관명" android:textSize="18sp" android:textColor="@color/white" android:textStyle="bold"/>
+        <TextView android:id="@+id/tvOrgValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="미소속" android:textSize="18sp" android:textColor="@color/white"/>
     </LinearLayout>
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
-        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="사용자명" android:textSize="18sp" android:textColor="#000000" android:textStyle="bold"/>
-        <TextView android:id="@+id/tvNameValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="사용자1" android:textSize="18sp" android:textColor="#000000"/>
+        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="사용자명" android:textSize="18sp" android:textColor="@color/white" android:textStyle="bold"/>
+        <TextView android:id="@+id/tvNameValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="사용자1" android:textSize="18sp" android:textColor="@color/white"/>
     </LinearLayout>
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="24dp">
-        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="전화 번호" android:textSize="18sp" android:textColor="#000000" android:textStyle="bold"/>
-        <TextView android:id="@+id/tvPhoneValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="123-4567-8901" android:textSize="18sp" android:textColor="#000000"/>
+        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="전화 번호" android:textSize="18sp" android:textColor="@color/white" android:textStyle="bold"/>
+        <TextView android:id="@+id/tvPhoneValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="123-4567-8901" android:textSize="18sp" android:textColor="@color/white"/>
     </LinearLayout>
 
-    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="보호자 정보 📝" android:textSize="14sp" android:textColor="#333333" android:layout_marginBottom="8dp"/>
-    <View android:layout_width="match_parent" android:layout_height="2dp" android:background="#000000" android:layout_marginBottom="16dp"/>
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="보호자 정보 📝" android:textSize="14sp" android:textColor="@color/app_gray" android:layout_marginBottom="8dp"/>
+    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#22FFFFFF" android:layout_marginBottom="16dp"/>
 
     <LinearLayout
         android:id="@+id/layoutUnlinkedGuardian"
@@ -62,14 +62,14 @@
             android:layout_height="wrap_content"
             android:text="보호자 정보가 없습니다"
             android:textSize="16sp"
-            android:textColor="#000000"
+            android:textColor="@color/white"
             android:layout_marginBottom="16dp"/>
         <Button
             android:id="@+id/btnLinkGuardian"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:backgroundTint="#000000"
-            android:textColor="#FFEB3B"
+            android:background="@drawable/bg_button_yellow" android:backgroundTint="@null"
+            android:textColor="@color/app_black"
             android:text="보호자 연동"
             android:textSize="18sp"
             android:textStyle="bold"
@@ -84,21 +84,21 @@
         android:visibility="gone"
         android:layout_marginBottom="16dp">
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
-            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="보호자명" android:textSize="18sp" android:textColor="#000000" android:textStyle="bold"/>
-            <TextView android:id="@+id/tvGuardianNameValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="-" android:textSize="18sp" android:textColor="#000000"/>
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="보호자명" android:textSize="18sp" android:textColor="@color/white" android:textStyle="bold"/>
+            <TextView android:id="@+id/tvGuardianNameValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="-" android:textSize="18sp" android:textColor="@color/white"/>
         </LinearLayout>
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="보호자 번호" android:textSize="18sp" android:textColor="#000000" android:textStyle="bold"/>
-            <TextView android:id="@+id/tvGuardianPhoneValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="080-098-1004" android:textSize="18sp" android:textColor="#000000"/>
+            <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="보호자 번호" android:textSize="18sp" android:textColor="@color/white" android:textStyle="bold"/>
+            <TextView android:id="@+id/tvGuardianPhoneValue" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="080-098-1004" android:textSize="18sp" android:textColor="@color/white"/>
         </LinearLayout>
     </LinearLayout>
 
-    <View android:layout_width="match_parent" android:layout_height="2dp" android:background="#000000" android:layout_marginBottom="16dp"/>
+    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#22FFFFFF" android:layout_marginBottom="16dp"/>
 
-    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="설정" android:textSize="14sp" android:textColor="#333333" android:layout_marginBottom="16dp"/>
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="설정" android:textSize="14sp" android:textColor="@color/app_gray" android:layout_marginBottom="16dp"/>
 
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="24dp">
-        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="알림 설정" android:textSize="18sp" android:textColor="#000000" android:textStyle="bold"/>
+        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="알림 설정" android:textSize="18sp" android:textColor="@color/white" android:textStyle="bold"/>
         <Switch android:id="@+id/switchNotification" android:layout_width="wrap_content" android:layout_height="wrap_content" android:checked="true" android:contentDescription="알림 설정 스위치"/>
     </LinearLayout>
 
@@ -108,8 +108,8 @@
         android:id="@+id/btnLogout"
         android:layout_width="match_parent"
         android:layout_height="80dp"
-        android:backgroundTint="#000000"
-        android:textColor="#FFEB3B"
+        android:background="@drawable/bg_button_dark_ghost" android:backgroundTint="@null"
+        android:textColor="@color/app_yellow"
         android:text="로그 아웃"
         android:textSize="24sp"
         android:textStyle="bold"

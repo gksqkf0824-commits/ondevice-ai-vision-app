@@ -5,7 +5,7 @@
     android:orientation="vertical"
     android:gravity="center_horizontal"
     android:padding="24dp"
-    android:background="#FFEB3B">
+    android:background="@color/app_yellow">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -13,7 +13,8 @@
         android:layout_marginTop="40dp"
         android:layout_marginBottom="32dp"
         android:orientation="horizontal"
-        android:background="#00000000">
+        android:background="@drawable/bg_tab_group_light"
+        android:padding="4dp">
 
         <TextView
             android:id="@+id/tabPersonal"
@@ -24,10 +25,10 @@
             android:text="개인"
             android:textSize="20sp"
             android:textStyle="bold"
-            android:textColor="#FFEB3B"
-            android:background="#000000"/>
+            android:textColor="@color/app_yellow"
+            android:background="@drawable/bg_button_dark"/>
 
-        <View android:layout_width="2dp" android:layout_height="match_parent" android:background="#000000"/>
+        <View android:layout_width="4dp" android:layout_height="match_parent" android:background="@android:color/transparent"/>
 
         <TextView
             android:id="@+id/tabOrg"
@@ -38,10 +39,10 @@
             android:text="기관"
             android:textSize="20sp"
             android:textStyle="bold"
-            android:textColor="#000000"
-            android:background="#00000000"/>
+            android:textColor="@color/app_black"
+            android:background="@android:color/transparent"/>
 
-        <View android:layout_width="2dp" android:layout_height="match_parent" android:background="#000000"/>
+        <View android:layout_width="4dp" android:layout_height="match_parent" android:background="@android:color/transparent"/>
 
         <TextView
             android:id="@+id/tabGuardian"
@@ -52,18 +53,18 @@
             android:text="보호자"
             android:textSize="20sp"
             android:textStyle="bold"
-            android:textColor="#000000"
-            android:background="#00000000"/>
+            android:textColor="@color/app_black"
+            android:background="@android:color/transparent"/>
     </LinearLayout>
 
-    <EditText android:id="@+id/etOrgName" android:layout_width="match_parent" android:layout_height="60dp" android:layout_marginBottom="12dp" android:background="#000000" android:padding="16dp" android:hint="기관명" android:textColorHint="#999999" android:textColor="#FFFFFF" android:visibility="gone"/>
-    <EditText android:id="@+id/etName" android:layout_width="match_parent" android:layout_height="60dp" android:layout_marginBottom="12dp" android:background="#000000" android:padding="16dp" android:hint="사용자명" android:textColorHint="#999999" android:textColor="#FFFFFF" android:visibility="gone"/>
-    <EditText android:id="@+id/etId" android:layout_width="match_parent" android:layout_height="60dp" android:layout_marginBottom="12dp" android:background="#000000" android:padding="16dp" android:hint="아이디" android:textColorHint="#999999" android:textColor="#FFFFFF" />
-    <EditText android:id="@+id/etPassword" android:layout_width="match_parent" android:layout_height="60dp" android:layout_marginBottom="12dp" android:background="#000000" android:padding="16dp" android:hint="비밀번호" android:inputType="textPassword" android:textColorHint="#999999" android:textColor="#FFFFFF" />
-    <EditText android:id="@+id/etPasswordConfirm" android:layout_width="match_parent" android:layout_height="60dp" android:layout_marginBottom="32dp" android:background="#000000" android:padding="16dp" android:hint="비밀번호 확인" android:inputType="textPassword" android:textColorHint="#999999" android:textColor="#FFFFFF" />
+    <EditText android:id="@+id/etOrgName" android:layout_width="match_parent" android:layout_height="60dp" android:layout_marginBottom="12dp" android:background="@drawable/bg_input_light" android:padding="16dp" android:hint="기관명" android:textColorHint="@color/app_gray" android:textColor="@color/app_black" android:visibility="gone"/>
+    <EditText android:id="@+id/etName" android:layout_width="match_parent" android:layout_height="60dp" android:layout_marginBottom="12dp" android:background="@drawable/bg_input_light" android:padding="16dp" android:hint="사용자명" android:textColorHint="@color/app_gray" android:textColor="@color/app_black" android:visibility="gone"/>
+    <EditText android:id="@+id/etId" android:layout_width="match_parent" android:layout_height="60dp" android:layout_marginBottom="12dp" android:background="@drawable/bg_input_light" android:padding="16dp" android:hint="아이디" android:textColorHint="@color/app_gray" android:textColor="@color/app_black" />
+    <EditText android:id="@+id/etPassword" android:layout_width="match_parent" android:layout_height="60dp" android:layout_marginBottom="12dp" android:background="@drawable/bg_input_light" android:padding="16dp" android:hint="비밀번호" android:inputType="textPassword" android:textColorHint="@color/app_gray" android:textColor="@color/app_black" />
+    <EditText android:id="@+id/etPasswordConfirm" android:layout_width="match_parent" android:layout_height="60dp" android:layout_marginBottom="32dp" android:background="@drawable/bg_input_light" android:padding="16dp" android:hint="비밀번호 확인" android:inputType="textPassword" android:textColorHint="@color/app_gray" android:textColor="@color/app_black" />
 
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-        <Button android:id="@+id/btnSignup" android:layout_width="0dp" android:layout_weight="1" android:layout_height="80dp" android:layout_marginEnd="8dp" android:backgroundTint="#000000" android:textColor="#FFEB3B" android:textSize="24sp" android:textStyle="bold" android:text="확인" />
-        <Button android:id="@+id/btnCancel" android:layout_width="0dp" android:layout_weight="1" android:layout_height="80dp" android:layout_marginStart="8dp" android:backgroundTint="#000000" android:textColor="#FFEB3B" android:textSize="24sp" android:textStyle="bold" android:text="취소" />
+        <Button android:id="@+id/btnSignup" android:layout_width="0dp" android:layout_weight="1" android:layout_height="80dp" android:layout_marginEnd="8dp" android:background="@drawable/bg_button_dark" android:backgroundTint="@null" android:textColor="@color/app_yellow" android:textSize="24sp" android:textStyle="bold" android:text="확인" />
+        <Button android:id="@+id/btnCancel" android:layout_width="0dp" android:layout_weight="1" android:layout_height="80dp" android:layout_marginStart="8dp" android:background="@drawable/bg_button_outline_dark" android:backgroundTint="@null" android:textColor="@color/app_black" android:textSize="24sp" android:textStyle="bold" android:text="취소" />
     </LinearLayout>
 </LinearLayout>

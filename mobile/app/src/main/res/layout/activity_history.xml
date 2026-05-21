@@ -3,7 +3,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#FFEB3B">
+    android:background="@color/app_yellow">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -19,7 +19,7 @@
             android:text="&lt;"
             android:textSize="40sp"
             android:background="#00000000"
-            android:textColor="#000000"
+            android:textColor="@color/app_black"
             android:contentDescription="뒤로 가기" />
 
         <TextView
@@ -29,7 +29,7 @@
             android:text="이용자 기록 확인"
             android:textSize="28sp"
             android:textStyle="bold"
-            android:textColor="#000000"
+            android:textColor="@color/app_black"
             android:layout_marginStart="8dp"/>
     </LinearLayout>
 
@@ -48,7 +48,7 @@
             android:layout_height="wrap_content"
             android:text="최근 기록"
             android:textSize="14sp"
-            android:textColor="#333333"/>
+            android:textColor="@color/app_gray_dark"/>
 
         <EditText
             android:id="@+id/etSearch"
@@ -58,15 +58,15 @@
             android:background="@android:color/transparent"
             android:hint="기록 검색 🔍"
             android:textSize="16sp"
-            android:textColor="#000000"
-            android:textColorHint="#666666"
+            android:textColor="@color/app_black"
+            android:textColorHint="@color/app_gray"
             android:singleLine="true"/>
     </LinearLayout>
 
     <View
         android:layout_width="match_parent"
         android:layout_height="2dp"
-        android:background="#000000"
+        android:background="@color/app_black"
         android:layout_marginHorizontal="24dp"
         android:layout_marginBottom="8dp"/>
 
@@ -106,7 +106,8 @@
         android:text="위험 객체 위치 로그"
         android:textSize="22sp"
         android:textStyle="bold"
-        android:backgroundTint="#000000"
-        android:textColor="#FFEB3B"/>
+        android:background="@drawable/bg_button_dark"
+        android:backgroundTint="@null"
+        android:textColor="@color/app_yellow"/>
 
 </LinearLayout>

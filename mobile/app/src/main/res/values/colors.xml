@@ -2,4 +2,14 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <color name="app_yellow">#FFD600</color>
+    <color name="app_yellow_light">#FFEB3B</color>
+    <color name="app_black">#111111</color>
+    <color name="app_black_soft">#1A1A1A</color>
+    <color name="app_card_dark">#222222</color>
+    <color name="app_gray_dark">#333333</color>
+    <color name="app_gray">#888888</color>
+    <color name="app_gray_light">#AAAAAA</color>
+    <color name="app_input_light">#EFFF7A</color>
+    <color name="app_danger">#FF3B30</color>
 </resources>
