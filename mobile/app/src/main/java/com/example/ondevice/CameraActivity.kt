@@ -28,6 +28,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -70,9 +71,12 @@ class CameraActivity : AppCompatActivity() {
         // 사용자 화면 기준 bus bounding box 면적이 전체 화면의 40% 이상일 때만 OCR 수행
         private const val BUS_OCR_AREA_RATIO_THRESHOLD = 0.12f
         private const val OCR_MIN_INTERVAL_MS = 1200L
+        private const val OCR_NO_TARGET_MIN_INTERVAL_MS = 3000L
         private const val OCR_CROP_PADDING_RATIO = 0.12f
-        private const val OCR_MIN_CROP_LONG_SIDE = 960
+        private const val OCR_MIN_CROP_LONG_SIDE = 720
         private const val OCR_MAX_UPSCALE = 3.0f
+        private const val OCR_ROUTE_CONFIRM_WINDOW_MS = 4500L
+        private const val OCR_ROUTE_CONFIRM_MIN_HITS = 2
 
         private const val MODEL_ASSET_NAME = "best_full_integer_quant.tflite"
         private const val ANALYSIS_TARGET_WIDTH = 512
@@ -84,19 +88,23 @@ class CameraActivity : AppCompatActivity() {
         private const val BENCHMARK_TARGET_INFERENCE_MS = 66.0
         private const val BENCHMARK_TARGET_OCR_MS = 1000.0
         // OCR 진행 중에도 완전히 멈추지 않고 저빈도로만 YOLO를 돌리기 위한 최소 간격 (ms)
-        private const val OCR_MODE_ANALYSIS_INTERVAL_MS = 300L
+        private const val OCR_MODE_ANALYSIS_INTERVAL_MS = 80L
 
         // --- 버스문 오탐 감소용 휴리스틱(코드 레벨 보완) ---
         // bus bbox 안에 충분히 포함되는 door만 유지 (intersection / doorArea)
-        private const val DOOR_MIN_IOA_WITH_BUS = 0.55f
+        private const val DOOR_MIN_IOA_WITH_BUS = 0.35f
         // bus bbox 대비 door bbox 면적 비율 범위
-        private const val DOOR_MIN_AREA_RATIO_TO_BUS = 0.01f
+        private const val DOOR_MIN_AREA_RATIO_TO_BUS = 0.003f
         private const val DOOR_MAX_AREA_RATIO_TO_BUS = 0.40f
         // door bbox 종횡비 범위 (width/height)
-        private const val DOOR_MIN_ASPECT_RATIO = 0.25f
-        private const val DOOR_MAX_ASPECT_RATIO = 2.50f
-        // door 최소 스코어(클래스 scoreThreshold=0.4f 보다 조금 엄격)
-        private const val DOOR_MIN_SCORE = 0.45f
+        private const val DOOR_MIN_ASPECT_RATIO = 0.15f
+        private const val DOOR_MAX_ASPECT_RATIO = 3.50f
+        private const val BUS_MODEL_SCORE_THRESHOLD = 0.60f
+        private const val BUS_MIN_AREA_RATIO = 0.04f
+        private const val BUS_MIN_ASPECT_RATIO = 0.70f
+        private const val BUS_MAX_ASPECT_RATIO = 4.50f
+        private const val DOOR_MODEL_SCORE_THRESHOLD = 0.25f
+        private const val DOOR_MIN_SCORE = 0.30f
 
         // 앞문 선택 스무딩(짧은 시간 내 선택 유지)
         private const val FRONT_DOOR_SMOOTHING_WINDOW_MS = 1400L
@@ -122,8 +130,15 @@ class CameraActivity : AppCompatActivity() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private val textRecognizer = TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
 
+    private data class RouteCandidate(
+        val number: String,
+        val box: RectF,
+        val score: Float
+    )
+
     private var targetBusNumber: String? = null
     private var isScanning = false
+    private var isTtsReady = false
     @Volatile private var isOcrProcessing = false
     private var lastSavedTimestamp = 0L
     private var lastOcrRequestTimestamp = 0L
@@ -144,6 +159,9 @@ class CameraActivity : AppCompatActivity() {
     private var ocrCount = 0
     private var ocrMsSum = 0.0
     private var maxOcrMs = 0.0
+    private var pendingRouteNumber: String? = null
+    private var pendingRouteHits = 0
+    private var pendingRouteTimestampMs = 0L
 
     private var modelInputSize = 640
     private var candidateCount = 8400
@@ -198,7 +216,13 @@ class CameraActivity : AppCompatActivity() {
 
         tts = android.speech.tts.TextToSpeech(this) { status ->
             if (status == android.speech.tts.TextToSpeech.SUCCESS) {
-                tts?.language = Locale.KOREAN
+                val languageResult = tts?.setLanguage(Locale.KOREAN)
+                isTtsReady = languageResult != android.speech.tts.TextToSpeech.LANG_MISSING_DATA &&
+                    languageResult != android.speech.tts.TextToSpeech.LANG_NOT_SUPPORTED
+                Log.i(TAG, "TTS ready=$isTtsReady languageResult=$languageResult")
+            } else {
+                isTtsReady = false
+                Log.w(TAG, "TTS init failed status=$status")
             }
         }
 
@@ -207,7 +231,8 @@ class CameraActivity : AppCompatActivity() {
             Log.d(TAG, "labels loaded: ${labels.size}")
 
             val useQuantizedModel = MODEL_ASSET_NAME.contains("int8", ignoreCase = true) ||
-                MODEL_ASSET_NAME.contains("uint8", ignoreCase = true)
+                MODEL_ASSET_NAME.contains("uint8", ignoreCase = true) ||
+                MODEL_ASSET_NAME.contains("quant", ignoreCase = true)
             val compatList = CompatibilityList()
             val options = Interpreter.Options().apply {
                 if (!useQuantizedModel && compatList.isDelegateSupportedOnThisDevice) {
@@ -256,6 +281,10 @@ class CameraActivity : AppCompatActivity() {
         })
 
         binding.btnScan.setOnClickListener { view ->
+            if (isScanning) {
+                return@setOnClickListener
+            }
+
             view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             resetMetrics()
             isScanning = true
@@ -388,6 +417,9 @@ class CameraActivity : AppCompatActivity() {
         ocrMsSum = 0.0
         maxOcrMs = 0.0
         lastOcrRequestTimestamp = 0L
+        pendingRouteNumber = null
+        pendingRouteHits = 0
+        pendingRouteTimestampMs = 0L
         Log.i(METRIC_TAG, "METRICS_RESET target=$targetBusNumber")
         logDeviceInfo()
         logBenchmarkConfig()
@@ -657,15 +689,60 @@ class CameraActivity : AppCompatActivity() {
             .sortedByDescending { it.score }
             .take(maxDetections)
 
-        return nmsResults
+        return keepOnlyPrimaryBus(nmsResults, imgWidth, imgHeight)
     }
 
     private fun scoreThresholdFor(classId: Int): Float {
-        return if (labels.getOrNull(classId).equals("bollard", ignoreCase = true)) {
-            bollardScoreThreshold
-        } else {
-            scoreThreshold
+        return when {
+            labels.getOrNull(classId).equals("bollard", ignoreCase = true) -> bollardScoreThreshold
+            labels.getOrNull(classId).equals("bus", ignoreCase = true) -> BUS_MODEL_SCORE_THRESHOLD
+            labels.getOrNull(classId).equals("bus_door", ignoreCase = true) -> DOOR_MODEL_SCORE_THRESHOLD
+            else -> scoreThreshold
         }
+    }
+
+    private fun keepOnlyPrimaryBus(
+        detections: List<DetectionResult>,
+        imageWidth: Float,
+        imageHeight: Float
+    ): List<DetectionResult> {
+        val nonBusDetections = detections.filterNot { it.label.equals("bus", ignoreCase = true) }
+        val primaryBus = detections
+            .asSequence()
+            .filter { it.label.equals("bus", ignoreCase = true) }
+            .filter { isLikelyPrimaryBus(it, imageWidth, imageHeight) }
+            .maxByOrNull { it.score }
+
+        return if (primaryBus != null) {
+            (nonBusDetections + primaryBus).sortedByDescending { it.score }
+        } else {
+            nonBusDetections.sortedByDescending { it.score }
+        }
+    }
+
+    private fun isLikelyPrimaryBus(
+        detection: DetectionResult,
+        imageWidth: Float,
+        imageHeight: Float
+    ): Boolean {
+        if (detection.score < BUS_MODEL_SCORE_THRESHOLD) return false
+
+        val box = detection.box
+        val imageArea = (imageWidth * imageHeight).coerceAtLeast(1f)
+        val areaRatio = rectArea(box) / imageArea
+        val aspect = box.width() / max(1f, box.height())
+        val valid = areaRatio >= BUS_MIN_AREA_RATIO &&
+            aspect in BUS_MIN_ASPECT_RATIO..BUS_MAX_ASPECT_RATIO
+
+        if (!valid) {
+            Log.i(
+                METRIC_TAG,
+                "BUS_REJECT score=${fmt(detection.score.toDouble())} " +
+                    "area=${fmt(areaRatio.toDouble())} aspect=${fmt(aspect.toDouble())} box=${rectToLog(box)}"
+            )
+        }
+
+        return valid
     }
 
     private fun getOutputValue(channel: Int, candidateIndex: Int): Float {
@@ -847,6 +924,31 @@ class CameraActivity : AppCompatActivity() {
         return selected
     }
 
+    private fun estimateFrontDoorBox(
+        busBox: RectF,
+        plateBox: RectF
+    ): RectF {
+        val busWidth = busBox.width().coerceAtLeast(1f)
+        val busHeight = busBox.height().coerceAtLeast(1f)
+        val frontOnRight = plateBox.centerX() >= busBox.centerX()
+        val doorWidth = busWidth * 0.16f
+        val doorHeight = busHeight * 0.58f
+        val centerX = if (frontOnRight) {
+            busBox.right - busWidth * 0.18f
+        } else {
+            busBox.left + busWidth * 0.18f
+        }
+        val top = busBox.top + busHeight * 0.28f
+        val bottom = (top + doorHeight).coerceAtMost(busBox.bottom)
+
+        return RectF(
+            (centerX - doorWidth / 2f).coerceAtLeast(busBox.left),
+            top.coerceAtLeast(busBox.top),
+            (centerX + doorWidth / 2f).coerceAtMost(busBox.right),
+            bottom
+        )
+    }
+
     private fun triggerStrongVibration() {
         val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
@@ -865,6 +967,11 @@ class CameraActivity : AppCompatActivity() {
     }
 
     private fun speakOut(text: String) {
+        if (!isTtsReady || text.isBlank()) {
+            Log.w(TAG, "TTS skipped ready=$isTtsReady textBlank=${text.isBlank()}")
+            return
+        }
+
         tts?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "")
     }
 
@@ -880,14 +987,18 @@ class CameraActivity : AppCompatActivity() {
                 val userId = sharedPref.getString("USER_ID", "알 수 없음") ?: "알 수 없음"
 
                 CoroutineScope(Dispatchers.IO).launch {
-                    AppDatabase.getDatabase(this@CameraActivity).historyDao().insertHistory(
-                        History(
-                            userName = userId,
-                            objectName = eventName,
-                            latitude = lat,
-                            longitude = lon
+                    try {
+                        AppDatabase.getDatabase(this@CameraActivity).historyDao().insertHistory(
+                            History(
+                                userName = userId,
+                                objectName = eventName,
+                                latitude = lat,
+                                longitude = lon
+                            )
                         )
-                    )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "History save failed", e)
+                    }
                 }
             }
         }
@@ -911,7 +1022,7 @@ class CameraActivity : AppCompatActivity() {
 
         if (pixelStride == 4 && rowStride == width * 4) {
             bitmap.copyPixelsFromBuffer(buffer)
-            return bitmap
+            return cropBitmapToProxyViewport(bitmap, imageProxy)
         }
 
         val row = ByteArray(rowStride)
@@ -929,7 +1040,22 @@ class CameraActivity : AppCompatActivity() {
             }
             bitmap.setPixels(rowPixels, 0, width, 0, y, width, 1)
         }
-        return bitmap
+        return cropBitmapToProxyViewport(bitmap, imageProxy)
+    }
+
+    private fun cropBitmapToProxyViewport(bitmap: Bitmap, imageProxy: ImageProxy): Bitmap {
+        val crop = imageProxy.cropRect
+        if (crop.left <= 0 && crop.top <= 0 && crop.right >= bitmap.width && crop.bottom >= bitmap.height) {
+            return bitmap
+        }
+
+        val left = crop.left.coerceIn(0, bitmap.width - 1)
+        val top = crop.top.coerceIn(0, bitmap.height - 1)
+        val right = crop.right.coerceIn(left + 1, bitmap.width)
+        val bottom = crop.bottom.coerceIn(top + 1, bitmap.height)
+        val cropped = Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
+        bitmap.recycle()
+        return cropped
     }
 
     private fun startCamera() {
@@ -1028,12 +1154,16 @@ class CameraActivity : AppCompatActivity() {
 
             try {
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                    this,
-                    cameraSelector,
-                    preview,
-                    imageAnalyzer
-                )
+                val useCaseGroupBuilder = UseCaseGroup.Builder()
+                    .addUseCase(preview)
+                    .addUseCase(imageAnalyzer)
+
+                binding.viewFinder.viewPort?.let { viewPort ->
+                    useCaseGroupBuilder.setViewPort(viewPort)
+                    Log.i(METRIC_TAG, "CAMERA_VIEWPORT enabled")
+                } ?: Log.w(METRIC_TAG, "CAMERA_VIEWPORT unavailable")
+
+                cameraProvider.bindToLifecycle(this, cameraSelector, useCaseGroupBuilder.build())
             } catch (exc: Exception) {
                 Log.e(TAG, "카메라 초기화 실패", exc)
                 Toast.makeText(this, "카메라 초기화 실패", Toast.LENGTH_SHORT).show()
@@ -1078,17 +1208,7 @@ class CameraActivity : AppCompatActivity() {
             else -> "12시"
         }
 
-        val scaleX = binding.viewFinder.width.toFloat() / imgWidth
-        val scaleY = binding.viewFinder.height.toFloat() / rotatedBitmap.height.toFloat()
-
-        val mappedBox = RectF(
-            bbox.left * scaleX,
-            bbox.top * scaleY,
-            bbox.right * scaleX,
-            bbox.bottom * scaleY
-        )
-
-        val allowOcrWithoutTarget = BuildConfig.DEBUG
+        val mappedBox = mapBoxToPreview(bbox, rotatedBitmap)
 
         if (category.equals("bus", true)) {
             val filteredDoors = filterBusDoorCandidates(
@@ -1106,8 +1226,7 @@ class CameraActivity : AppCompatActivity() {
             )
 
             val shouldRunOcr =
-                busAreaRatio >= BUS_OCR_AREA_RATIO_THRESHOLD &&
-                    (allowOcrWithoutTarget || !targetBusNumber.isNullOrBlank())
+                busAreaRatio >= BUS_OCR_AREA_RATIO_THRESHOLD
 
             if (shouldRunOcr) {
                 handleBusOcr(
@@ -1130,6 +1249,13 @@ class CameraActivity : AppCompatActivity() {
                         "bus ($score%)"
                     )
                     binding.tvResultDesc.text = descText
+                }
+
+                val currentTimestamp = System.currentTimeMillis()
+                if (currentTimestamp - lastSavedTimestamp >= 5000) {
+                    lastSavedTimestamp = currentTimestamp
+                    speakOut(descText)
+                    saveToDatabase(category)
                 }
 
                 rotatedBitmap.recycle()
@@ -1217,7 +1343,12 @@ class CameraActivity : AppCompatActivity() {
         }
 
         val nowMs = SystemClock.elapsedRealtime()
-        if (nowMs - lastOcrRequestTimestamp < OCR_MIN_INTERVAL_MS) {
+        val minOcrIntervalMs = if (targetBusNumber.isNullOrBlank()) {
+            OCR_NO_TARGET_MIN_INTERVAL_MS
+        } else {
+            OCR_MIN_INTERVAL_MS
+        }
+        if (nowMs - lastOcrRequestTimestamp < minOcrIntervalMs) {
             rotatedBitmap.recycle()
             imageProxy.close()
             return
@@ -1263,66 +1394,91 @@ class CameraActivity : AppCompatActivity() {
             .addOnSuccessListener { visionText ->
                 val recognizedText = visionText.text.replace(Regex("\\s"), "")
                 val normalizedText = normalizeOcrText(visionText.text)
-                val isTargetMatched = targetBusNumber
+                val targetTextBox = targetBusNumber
                     ?.takeIf { it.isNotBlank() }
-                    ?.let { doesOcrTextMatchTarget(visionText.text, it) }
-                    ?: false
+                    ?.let {
+                        findTargetTextBox(
+                            visionText = visionText,
+                            targetBusNumber = it,
+                            cropLeft = left,
+                            cropTop = top,
+                            cropWidth = width,
+                            cropHeight = height,
+                            ocrWidth = ocrBitmap.width,
+                            ocrHeight = ocrBitmap.height
+                        )
+                    }
+                val routeCandidate = if (targetBusNumber.isNullOrBlank()) {
+                    findBestRouteCandidate(
+                        visionText = visionText,
+                        cropLeft = left,
+                        cropTop = top,
+                        cropWidth = width,
+                        cropHeight = height,
+                        ocrWidth = ocrBitmap.width,
+                        ocrHeight = ocrBitmap.height
+                    )
+                } else {
+                    null
+                }
+                val isRouteConfirmed = if (targetTextBox != null && !targetBusNumber.isNullOrBlank()) {
+                    updateRouteConfirmation(targetBusNumber!!)
+                } else {
+                    false
+                }
 
                 Log.i(
                     METRIC_TAG,
-                    "OCR_RESULT target=$targetBusNumber matched=$isTargetMatched " +
-                        "textLength=${recognizedText.length} normalized=$normalizedText text=$recognizedText"
+                    "OCR_RESULT target=$targetBusNumber matched=${targetTextBox != null} confirmed=$isRouteConfirmed " +
+                        "candidate=${routeCandidate?.number ?: "none"} textLength=${recognizedText.length} normalizedLength=${normalizedText.length}"
                 )
 
-                if (targetBusNumber.isNullOrBlank() && BuildConfig.DEBUG) {
-                    // 타겟이 없더라도 OCR 자체는 수행하여 동작 확인/디버깅 및 사용자 피드백에 활용합니다.
-                    val descText = if (recognizedText.isNotBlank()) {
-                        "OCR 결과: ${recognizedText.take(20)}"
+                if (targetBusNumber.isNullOrBlank()) {
+                    val descText = if (routeCandidate != null) {
+                        "${routeCandidate.number}번 버스가 감지되었습니다."
                     } else {
-                        "번호판 인식 중입니다..."
+                        "전방 $direction 방향에 버스가 감지되었습니다."
                     }
+                    val overlayLabel = routeCandidate?.number?.let { "버스 ${it}번" } ?: "bus ($score%)"
 
                     runOnUiThread {
                         binding.overlayView.setBoxInfo(
                             mappedBox,
                             Color.GREEN,
-                            "bus ($score%)"
+                            overlayLabel
                         )
                         binding.tvResultDesc.text = descText
                     }
-                } else if (isTargetMatched) {
-                    val plateBox = findTargetTextBox(
-                        visionText = visionText,
-                        targetBusNumber = targetBusNumber!!,
-                        cropLeft = left,
-                        cropTop = top
+
+                    val currentTimestamp = System.currentTimeMillis()
+                    if (currentTimestamp - lastSavedTimestamp >= 5000) {
+                        lastSavedTimestamp = currentTimestamp
+                        speakOut(descText)
+                        saveToDatabase(routeCandidate?.number?.let { "버스 감지 ($it)" } ?: category)
+                    }
+                } else if (isRouteConfirmed) {
+                    val plateBox = targetTextBox ?: return@addOnSuccessListener
+
+                    val frontDoor = selectFrontDoor(
+                        plateBox = plateBox,
+                        doors = doors,
+                        busBox = bbox
                     )
-
-                    val frontDoor = if (plateBox != null) {
-                        selectFrontDoor(
-                            plateBox = plateBox,
-                            doors = doors,
-                            busBox = bbox
-                        )
-                    } else {
-                        null
-                    }
-                    val frontDoorDistancePx = if (plateBox != null && frontDoor != null) {
-                        distanceBetweenBoxes(plateBox, frontDoor.box)
-                    } else {
-                        null
+                    val frontDoorBox = frontDoor?.box ?: estimateFrontDoorBox(
+                        busBox = bbox,
+                        plateBox = plateBox
+                    )
+                    val frontDoorDistancePx = frontDoor?.let {
+                        distanceBetweenBoxes(plateBox, it.box)
                     }
 
-                    val frontDoorDirection = if (frontDoor != null) {
-                        getDirectionFromBox(frontDoor.box, rotatedBitmap.width.toFloat())
-                    } else {
-                        direction
-                    }
+                    val frontDoorDirection = getDirectionFromBox(frontDoorBox, rotatedBitmap.width.toFloat())
 
                     Log.i(
                         METRIC_TAG,
                         "ALGO_FRONT_DOOR target=$targetBusNumber plateBox=${rectToLog(plateBox)} " +
                             "doorCandidates=${doors.size} selectedDoor=${rectToLog(frontDoor?.box)} " +
+                            "fallbackDoor=${frontDoor == null} frontDoorBox=${rectToLog(frontDoorBox)} " +
                             "distancePx=${frontDoorDistancePx?.let { fmt(it.toDouble()) } ?: "none"} " +
                             "direction=$frontDoorDirection"
                     )
@@ -1330,16 +1486,12 @@ class CameraActivity : AppCompatActivity() {
                     val descText =
                         "(TTS) $targetBusNumber 번, 타겟 버스가 감지되었습니다. 앞문은 $frontDoorDirection 방향입니다."
 
-                    val boxForOverlay = if (frontDoor != null) {
-                        mapBoxToPreview(frontDoor.box, rotatedBitmap)
-                    } else {
-                        mappedBox
-                    }
+                    val boxForOverlay = mapBoxToPreview(frontDoorBox, rotatedBitmap)
 
                     val overlayLabel = if (frontDoor != null) {
                         "앞문 (${targetBusNumber}번)"
                     } else {
-                        "버스 ${targetBusNumber}번"
+                        "앞문 추정 (${targetBusNumber}번)"
                     }
 
                     runOnUiThread {
@@ -1364,13 +1516,26 @@ class CameraActivity : AppCompatActivity() {
                         "ALGO_FRONT_DOOR target=$targetBusNumber skipped=target_not_matched doorCandidates=${doors.size}"
                     )
 
+                    val busDetectedDescText = if (targetTextBox != null) {
+                        "전방 $direction 방향에 버스가 감지되었습니다. 번호를 확인 중입니다."
+                    } else {
+                        "전방 $direction 방향에 버스/차량이 감지되었습니다."
+                    }
+
                     runOnUiThread {
                         binding.overlayView.setBoxInfo(
                             mappedBox,
                             Color.GREEN,
                             "$category ($score%)"
                         )
-                        binding.tvResultDesc.text = "전방 $direction 방향에 버스/차량이 감지되었습니다."
+                        binding.tvResultDesc.text = busDetectedDescText
+                    }
+
+                    val currentTimestamp = System.currentTimeMillis()
+                    if (currentTimestamp - lastSavedTimestamp >= 5000) {
+                        lastSavedTimestamp = currentTimestamp
+                        speakOut(busDetectedDescText)
+                        saveToDatabase(category)
                     }
                 }
             }
@@ -1447,41 +1612,184 @@ class CameraActivity : AppCompatActivity() {
         return normalizeOcrText(text).filter { it.isDigit() }
     }
 
-    private fun doesOcrTextMatchTarget(
-        recognizedText: String,
-        targetBusNumber: String
-    ): Boolean {
-        val normalizedText = normalizeOcrText(recognizedText)
-        val normalizedTarget = normalizeOcrText(targetBusNumber)
+    private fun updateRouteConfirmation(targetBusNumber: String): Boolean {
+        val normalizedTarget = normalizeOcrDigits(targetBusNumber)
+        if (normalizedTarget.isBlank()) return false
 
-        if (normalizedTarget.isNotEmpty() && normalizedText.contains(normalizedTarget)) {
-            return true
+        val nowMs = SystemClock.elapsedRealtime()
+        val isSameWindow = pendingRouteNumber == normalizedTarget &&
+            nowMs - pendingRouteTimestampMs <= OCR_ROUTE_CONFIRM_WINDOW_MS
+
+        if (isSameWindow) {
+            pendingRouteHits += 1
+        } else {
+            pendingRouteNumber = normalizedTarget
+            pendingRouteHits = 1
         }
 
-        val recognizedDigits = normalizeOcrDigits(recognizedText)
-        val targetDigits = normalizeOcrDigits(targetBusNumber)
+        pendingRouteTimestampMs = nowMs
 
-        return targetDigits.length >= 2 && recognizedDigits.contains(targetDigits)
+        Log.i(
+            METRIC_TAG,
+            "OCR_ROUTE_CONFIRM target=$targetBusNumber normalized=$normalizedTarget hits=$pendingRouteHits"
+        )
+
+        return pendingRouteHits >= OCR_ROUTE_CONFIRM_MIN_HITS
+    }
+
+    private fun isLikelyBusRouteText(
+        text: String,
+        targetBusNumber: String
+    ): Boolean {
+        val compactText = text.replace(Regex("\\s"), "")
+        val targetDigits = normalizeOcrDigits(targetBusNumber)
+        val routeCandidate = extractRouteNumberCandidate(text) ?: return false
+        if (targetDigits.isBlank()) {
+            return false
+        }
+
+        val isTargetMatched = if (targetDigits.length == 1) {
+            routeCandidate == targetDigits
+        } else {
+            routeCandidate.contains(targetDigits)
+        }
+        if (!isTargetMatched) {
+            return false
+        }
+
+        val maxRouteDigits = max(5, targetDigits.length + 2)
+        if (routeCandidate.length > maxRouteDigits) {
+            return false
+        }
+
+        return compactText.length <= 14
+    }
+
+    private fun isLikelyBusRouteBox(
+        box: android.graphics.Rect,
+        ocrWidth: Int,
+        ocrHeight: Int
+    ): Boolean {
+        if (ocrWidth <= 0 || ocrHeight <= 0) return true
+
+        val centerYRatio = box.centerY().toFloat() / ocrHeight.toFloat()
+        val widthRatio = box.width().toFloat() / ocrWidth.toFloat()
+        val heightRatio = box.height().toFloat() / ocrHeight.toFloat()
+
+        if (centerYRatio > 0.78f) return false
+        if (widthRatio > 0.65f) return false
+        if (heightRatio < 0.025f) return false
+
+        return true
+    }
+
+    private fun extractRouteNumberCandidate(text: String): String? {
+        val compactText = text.replace(Regex("\\s"), "")
+        if (Regex("""\d{2,3}[가-힣]\d{4}""").containsMatchIn(compactText)) {
+            return null
+        }
+
+        val normalized = normalizeOcrText(text).replace(Regex("\\s"), "")
+        if (normalized.length > 18) {
+            return null
+        }
+
+        return Regex("""\d{1,5}""")
+            .findAll(normalized)
+            .map { it.value }
+            .filterNot { it.length >= 3 && it.startsWith("0") }
+            .maxWithOrNull(compareBy<String> { it.length }.thenBy { it })
+    }
+
+    private fun findBestRouteCandidate(
+        visionText: Text,
+        cropLeft: Int,
+        cropTop: Int,
+        cropWidth: Int,
+        cropHeight: Int,
+        ocrWidth: Int,
+        ocrHeight: Int
+    ): RouteCandidate? {
+        val scaleX = cropWidth.toFloat() / max(1, ocrWidth).toFloat()
+        val scaleY = cropHeight.toFloat() / max(1, ocrHeight).toFloat()
+        val candidates = mutableListOf<RouteCandidate>()
+
+        for (block in visionText.textBlocks) {
+            for (line in block.lines) {
+                val box = line.boundingBox ?: continue
+                val number = extractRouteNumberCandidate(line.text) ?: continue
+                if (!isLikelyBusRouteBox(box, ocrWidth, ocrHeight)) {
+                    Log.i(
+                        METRIC_TAG,
+                        "OCR_ROUTE_CANDIDATE_REJECT number=$number reason=geometry box=${box.flattenToString()}"
+                    )
+                    continue
+                }
+
+                val boxAreaRatio = box.width().toFloat() * box.height().toFloat() /
+                    max(1, ocrWidth * ocrHeight).toFloat()
+                val lengthBonus = number.length * 0.12f
+                val fourDigitBonus = if (number.length == 4) 0.25f else 0f
+                val score = boxAreaRatio + lengthBonus + fourDigitBonus
+                val mappedBox = RectF(
+                    box.left * scaleX + cropLeft.toFloat(),
+                    box.top * scaleY + cropTop.toFloat(),
+                    box.right * scaleX + cropLeft.toFloat(),
+                    box.bottom * scaleY + cropTop.toFloat()
+                )
+
+                candidates += RouteCandidate(
+                    number = number,
+                    box = mappedBox,
+                    score = score
+                )
+
+                Log.i(
+                    METRIC_TAG,
+                    "OCR_ROUTE_CANDIDATE number=$number score=${fmt(score.toDouble())} box=${box.flattenToString()}"
+                )
+            }
+        }
+
+        return candidates.maxByOrNull { it.score }
     }
 
     private fun findTargetTextBox(
         visionText: Text,
         targetBusNumber: String,
         cropLeft: Int,
-        cropTop: Int
+        cropTop: Int,
+        cropWidth: Int,
+        cropHeight: Int,
+        ocrWidth: Int,
+        ocrHeight: Int
     ): RectF? {
+        val scaleX = cropWidth.toFloat() / max(1, ocrWidth).toFloat()
+        val scaleY = cropHeight.toFloat() / max(1, ocrHeight).toFloat()
+
         for (block in visionText.textBlocks) {
             for (line in block.lines) {
-                if (doesOcrTextMatchTarget(line.text, targetBusNumber)) {
-                    val box = line.boundingBox ?: continue
-
-                    return RectF(
-                        box.left + cropLeft.toFloat(),
-                        box.top + cropTop.toFloat(),
-                        box.right + cropLeft.toFloat(),
-                        box.bottom + cropTop.toFloat()
+                val box = line.boundingBox ?: continue
+                if (!isLikelyBusRouteText(line.text, targetBusNumber)) continue
+                if (!isLikelyBusRouteBox(box, ocrWidth, ocrHeight)) {
+                    Log.i(
+                        METRIC_TAG,
+                        "OCR_ROUTE_REJECT target=$targetBusNumber reason=geometry text=${line.text} box=${box.flattenToString()}"
                     )
+                    continue
                 }
+
+                Log.i(
+                    METRIC_TAG,
+                    "OCR_ROUTE_MATCH target=$targetBusNumber text=${line.text} box=${box.flattenToString()}"
+                )
+
+                return RectF(
+                    box.left * scaleX + cropLeft.toFloat(),
+                    box.top * scaleY + cropTop.toFloat(),
+                    box.right * scaleX + cropLeft.toFloat(),
+                    box.bottom * scaleY + cropTop.toFloat()
+                )
             }
         }
 
@@ -1492,15 +1800,6 @@ class CameraActivity : AppCompatActivity() {
         val dx = a.centerX() - b.centerX()
         val dy = a.centerY() - b.centerY()
         return sqrt(dx * dx + dy * dy)
-    }
-
-    private fun findNearestDoor(
-        plateBox: RectF,
-        doors: List<DetectionResult>
-    ): DetectionResult? {
-        return doors.minByOrNull { door ->
-            distanceBetweenBoxes(plateBox, door.box)
-        }
     }
 
     private fun getDirectionFromBox(box: RectF, imageWidth: Float): String {
@@ -1514,14 +1813,24 @@ class CameraActivity : AppCompatActivity() {
     }
 
     private fun mapBoxToPreview(box: RectF, rotatedBitmap: Bitmap): RectF {
-        val scaleX = binding.viewFinder.width.toFloat() / rotatedBitmap.width.toFloat()
-        val scaleY = binding.viewFinder.height.toFloat() / rotatedBitmap.height.toFloat()
+        val viewWidth = (binding.overlayView.width.takeIf { it > 0 } ?: binding.viewFinder.width).toFloat()
+        val viewHeight = (binding.overlayView.height.takeIf { it > 0 } ?: binding.viewFinder.height).toFloat()
+        val imageWidth = rotatedBitmap.width.toFloat()
+        val imageHeight = rotatedBitmap.height.toFloat()
+
+        if (viewWidth <= 0f || viewHeight <= 0f || imageWidth <= 0f || imageHeight <= 0f) {
+            return RectF(box)
+        }
+
+        val scale = max(viewWidth / imageWidth, viewHeight / imageHeight)
+        val offsetX = (viewWidth - imageWidth * scale) / 2f
+        val offsetY = (viewHeight - imageHeight * scale) / 2f
 
         return RectF(
-            box.left * scaleX,
-            box.top * scaleY,
-            box.right * scaleX,
-            box.bottom * scaleY
+            box.left * scale + offsetX,
+            box.top * scale + offsetY,
+            box.right * scale + offsetX,
+            box.bottom * scale + offsetY
         )
     }
 

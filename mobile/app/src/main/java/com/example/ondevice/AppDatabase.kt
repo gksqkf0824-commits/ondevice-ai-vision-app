@@ -6,7 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 // 💡 entities에 User::class를 추가하고 버전을 6으로 올림
-@Database(entities = [History::class, User::class], version = 6, exportSchema = false)
+@Database(entities = [History::class, User::class], version = 7, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun historyDao(): HistoryDao
     abstract fun userDao(): UserDao

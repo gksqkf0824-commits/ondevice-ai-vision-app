@@ -9,7 +9,8 @@
     <androidx.camera.view.PreviewView
         android:id="@+id/viewFinder"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        app:scaleType="fillCenter" />
 
     <com.example.ondevice.OverlayView
         android:id="@+id/overlayView"
@@ -26,7 +27,7 @@
         android:textColor="#FFFFFF"
         android:contentDescription="뒤로 가기"
         app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintStart_toStartOf="parent"/>
+        app:layout_constraintStart_toStartOf="parent" />
 
     <LinearLayout
         android:id="@+id/btnScan"
@@ -41,18 +42,20 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
+
         <ImageView
             android:layout_width="64dp"
             android:layout_height="64dp"
             android:src="@android:drawable/ic_menu_camera"
-            app:tint="#FFFFFF"/>
+            app:tint="#FFFFFF" />
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="스캔 시작"
             android:textColor="#FFFFFF"
             android:textStyle="bold"
-            android:layout_marginTop="8dp"/>
+            android:layout_marginTop="8dp" />
     </LinearLayout>
 
     <androidx.constraintlayout.widget.ConstraintLayout
@@ -75,7 +78,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="80dp"
                 android:backgroundTint="#00A2FF"
-                android:text="🔊 음성 안내 다시 듣기"
+                android:text="음성 안내 다시 듣기"
                 android:textSize="24sp"
                 android:textStyle="bold"
                 android:textColor="#FFFFFF"
