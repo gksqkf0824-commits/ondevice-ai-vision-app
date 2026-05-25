@@ -1062,7 +1062,16 @@ class CameraActivity : AppCompatActivity() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
         cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
+            val cameraProvider = try {
+                cameraProviderFuture.get()
+            } catch (exc: Throwable) {
+                Log.e(TAG, "Camera provider init failed", exc)
+                runOnUiThread {
+                    Toast.makeText(this, "카메라를 열 수 없습니다.", Toast.LENGTH_SHORT).show()
+                    binding.btnScan.isEnabled = false
+                }
+                return@addListener
+            }
 
             val preview = Preview.Builder().build().also {
                 it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
@@ -1140,17 +1149,23 @@ class CameraActivity : AppCompatActivity() {
                                 rotatedBitmap.recycle()
                                 imageProxy.close()
                             }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "프레임 분석 중 오류", e)
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "프레임 분석 중 오류", t)
                             runOnUiThread {
                                 binding.tvResultDesc.text = "탐지 중 오류가 발생했습니다."
                             }
-                            imageProxy.close()
+                            runCatching { imageProxy.close() }
                         }
                     }
                 }
 
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+            val cameraSelector = chooseAvailableCamera(cameraProvider)
+            if (cameraSelector == null) {
+                Log.e(TAG, "No available camera on this device/emulator")
+                Toast.makeText(this, "사용 가능한 카메라가 없습니다.", Toast.LENGTH_SHORT).show()
+                binding.btnScan.isEnabled = false
+                return@addListener
+            }
 
             try {
                 cameraProvider.unbindAll()
@@ -1164,11 +1179,25 @@ class CameraActivity : AppCompatActivity() {
                 } ?: Log.w(METRIC_TAG, "CAMERA_VIEWPORT unavailable")
 
                 cameraProvider.bindToLifecycle(this, cameraSelector, useCaseGroupBuilder.build())
-            } catch (exc: Exception) {
+            } catch (exc: Throwable) {
                 Log.e(TAG, "카메라 초기화 실패", exc)
                 Toast.makeText(this, "카메라 초기화 실패", Toast.LENGTH_SHORT).show()
             }
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun chooseAvailableCamera(cameraProvider: ProcessCameraProvider): CameraSelector? {
+        return listOf(
+            CameraSelector.DEFAULT_BACK_CAMERA,
+            CameraSelector.DEFAULT_FRONT_CAMERA
+        ).firstOrNull { selector ->
+            try {
+                cameraProvider.hasCamera(selector)
+            } catch (exc: Throwable) {
+                Log.w(TAG, "Camera selector unavailable: $selector", exc)
+                false
+            }
+        }
     }
 
     private fun handleDetectionResult(
