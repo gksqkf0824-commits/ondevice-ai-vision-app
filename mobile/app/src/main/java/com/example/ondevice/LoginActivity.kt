@@ -2,10 +2,12 @@ package com.example.ondevice
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
 import android.view.HapticFeedbackConstants
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import com.example.ondevice.databinding.ActivityLoginBinding
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -28,11 +30,27 @@ class LoginActivity : AppCompatActivity() {
         // AuthActivity에서 넘겨준 꼬리표(개인/기관/보호자)를 받습니다.
         val loginType = intent.getStringExtra("LOGIN_TYPE")?: "PERSONAL"
 
-        // 💡 꼬리표에 따라 화면 맨 위의 큰 제목을 피그마 디자인처럼 바꿔줍니다!
         when (loginType) {
             "PERSONAL" -> binding.tvLoginTitle.text = "개인 로그인"
             "ORG" -> binding.tvLoginTitle.text = "기관 로그인"
             "GUARDIAN" -> binding.tvLoginTitle.text = "보호자 로그인"
+        }
+
+        val activeTabBg = ContextCompat.getDrawable(this, R.drawable.bg_tab_active_yellow)
+        val activeTextColor = Color.parseColor("#111111")
+        when (loginType) {
+            "PERSONAL" -> {
+                binding.tabLoginPersonal.background = activeTabBg
+                binding.tabLoginPersonal.setTextColor(activeTextColor)
+            }
+            "ORG" -> {
+                binding.tabLoginOrg.background = activeTabBg
+                binding.tabLoginOrg.setTextColor(activeTextColor)
+            }
+            "GUARDIAN" -> {
+                binding.tabLoginGuardian.background = activeTabBg
+                binding.tabLoginGuardian.setTextColor(activeTextColor)
+            }
         }
 
         binding.btnLoginConfirm.setOnClickListener {

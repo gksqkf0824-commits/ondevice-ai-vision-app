@@ -6,6 +6,7 @@ import android.view.HapticFeedbackConstants
 import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import com.example.ondevice.databinding.ActivitySignupBinding
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -75,36 +76,37 @@ class SignupActivity : AppCompatActivity() {
         }
     }
 
-    // 💡 탭 디자인 변경 및 입력창 숨기기/보이기 조작 함수
     private fun selectTab(type: String) {
         selectedType = type
 
-        // 1. 모든 탭 디자인 초기화 (투명 배경, 검은 글씨)
-        binding.tabPersonal.setBackgroundColor(Color.TRANSPARENT)
-        binding.tabPersonal.setTextColor(Color.BLACK)
-        binding.tabOrg.setBackgroundColor(Color.TRANSPARENT)
-        binding.tabOrg.setTextColor(Color.BLACK)
-        binding.tabGuardian.setBackgroundColor(Color.TRANSPARENT)
-        binding.tabGuardian.setTextColor(Color.BLACK)
+        val activeTabBg = ContextCompat.getDrawable(this, R.drawable.bg_tab_active_dark)
+        val activeTextColor = Color.parseColor("#111111")
+        val inactiveTextColor = Color.parseColor("#59000000")
 
-        // 2. 선택된 탭을 까맣게 칠하고, 노란 글씨로 변경. 그리고 입력창 보이기 설정
+        binding.tabPersonal.background = null
+        binding.tabPersonal.setTextColor(inactiveTextColor)
+        binding.tabOrg.background = null
+        binding.tabOrg.setTextColor(inactiveTextColor)
+        binding.tabGuardian.background = null
+        binding.tabGuardian.setTextColor(inactiveTextColor)
+
         when (type) {
             "PERSONAL" -> {
-                binding.tabPersonal.setBackgroundColor(Color.BLACK)
-                binding.tabPersonal.setTextColor(Color.parseColor("#FFEB3B"))
+                binding.tabPersonal.background = activeTabBg
+                binding.tabPersonal.setTextColor(activeTextColor)
                 binding.etOrgName.visibility = View.GONE
                 binding.etName.visibility = View.GONE
             }
             "ORG" -> {
-                binding.tabOrg.setBackgroundColor(Color.BLACK)
-                binding.tabOrg.setTextColor(Color.parseColor("#FFEB3B"))
+                binding.tabOrg.background = activeTabBg
+                binding.tabOrg.setTextColor(activeTextColor)
                 binding.etOrgName.visibility = View.VISIBLE
                 binding.etName.visibility = View.VISIBLE
                 binding.etName.hint = "사용자명"
             }
             "GUARDIAN" -> {
-                binding.tabGuardian.setBackgroundColor(Color.BLACK)
-                binding.tabGuardian.setTextColor(Color.parseColor("#FFEB3B"))
+                binding.tabGuardian.background = activeTabBg
+                binding.tabGuardian.setTextColor(activeTextColor)
                 binding.etOrgName.visibility = View.VISIBLE
                 binding.etName.visibility = View.VISIBLE
                 binding.etName.hint = "보호자명"

@@ -32,5 +32,15 @@ class MainActivity : AppCompatActivity() {
             view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             startActivity(Intent(this, SettingsActivity::class.java))
         }
+
+        binding.navCamera.setOnClickListener { view ->
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            startActivity(Intent(this, BusInputActivity::class.java))
+        }
+
+        binding.navSettings.setOnClickListener { view ->
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
     }
 }

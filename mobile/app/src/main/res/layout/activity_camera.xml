@@ -4,30 +4,35 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#222222">
+    android:background="#000000">
 
     <androidx.camera.view.PreviewView
         android:id="@+id/viewFinder"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:scaleType="fillCenter" />
+        app:scaleType="fillCenter"/>
 
     <com.example.ondevice.OverlayView
         android:id="@+id/overlayView"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"/>
 
     <Button
         android:id="@+id/btnBack"
-        android:layout_width="100dp"
-        android:layout_height="100dp"
-        android:text="&lt;"
-        android:textSize="50sp"
-        android:background="#00000000"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:layout_margin="16dp"
+        android:background="@drawable/bg_camera_btn"
+        android:text="‹"
+        android:textSize="22sp"
         android:textColor="#FFFFFF"
+        android:textStyle="bold"
+        android:padding="0dp"
+        android:insetTop="0dp"
+        android:insetBottom="0dp"
         android:contentDescription="뒤로 가기"
         app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintStart_toStartOf="parent" />
+        app:layout_constraintStart_toStartOf="parent"/>
 
     <LinearLayout
         android:id="@+id/btnScan"
@@ -35,7 +40,7 @@
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:gravity="center"
-        android:layout_marginBottom="32dp"
+        android:layout_marginBottom="40dp"
         android:clickable="true"
         android:focusable="true"
         android:contentDescription="화면 스캔"
@@ -43,11 +48,17 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
-        <ImageView
-            android:layout_width="64dp"
-            android:layout_height="64dp"
-            android:src="@android:drawable/ic_menu_camera"
-            app:tint="#FFFFFF" />
+        <FrameLayout
+            android:layout_width="68dp"
+            android:layout_height="68dp"
+            android:background="@drawable/bg_camera_btn">
+            <ImageView
+                android:layout_width="34dp"
+                android:layout_height="34dp"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_camera_nav"
+                android:contentDescription="@null"/>
+        </FrameLayout>
 
         <TextView
             android:layout_width="wrap_content"
@@ -55,7 +66,8 @@
             android:text="스캔 시작"
             android:textColor="#FFFFFF"
             android:textStyle="bold"
-            android:layout_marginTop="8dp" />
+            android:textSize="13sp"
+            android:layout_marginTop="8dp"/>
     </LinearLayout>
 
     <androidx.constraintlayout.widget.ConstraintLayout
@@ -69,30 +81,33 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:background="#FFFFFF"
+            android:background="@drawable/bg_result_panel"
             android:padding="24dp"
             app:layout_constraintBottom_toBottomOf="parent">
 
-            <Button
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnPlayTTS"
                 android:layout_width="match_parent"
-                android:layout_height="80dp"
-                android:backgroundTint="#00A2FF"
+                android:layout_height="52dp"
+                app:backgroundTint="#FFD600"
                 android:text="음성 안내 다시 듣기"
-                android:textSize="24sp"
+                android:textSize="15sp"
                 android:textStyle="bold"
-                android:textColor="#FFFFFF"
-                android:contentDescription="인식 결과 음성 안내 듣기" />
+                android:textColor="#111111"
+                app:cornerRadius="12dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:contentDescription="인식 결과 음성 안내 듣기"
+                android:layout_marginBottom="16dp"/>
 
             <TextView
                 android:id="@+id/tvResultDesc"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
                 android:text="실시간 환경 분석 중..."
-                android:textColor="#000000"
-                android:textSize="18sp"
-                android:textStyle="bold" />
+                android:textColor="#AAAAAA"
+                android:textSize="14sp"
+                android:lineSpacingExtra="4dp"/>
         </LinearLayout>
     </androidx.constraintlayout.widget.ConstraintLayout>
 </androidx.constraintlayout.widget.ConstraintLayout>
