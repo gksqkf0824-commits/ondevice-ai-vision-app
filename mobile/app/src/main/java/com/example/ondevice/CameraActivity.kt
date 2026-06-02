@@ -78,7 +78,7 @@ class CameraActivity : AppCompatActivity() {
         private const val OCR_ROUTE_CONFIRM_WINDOW_MS = 4500L
         private const val OCR_ROUTE_CONFIRM_MIN_HITS = 2
 
-        private const val MODEL_ASSET_NAME = "best_full_integer_quant.tflite"
+        private const val MODEL_ASSET_NAME = "BusProject_v11n_best_int8.tflite"
         private const val ANALYSIS_TARGET_WIDTH = 512
         private const val ANALYSIS_TARGET_HEIGHT = 512
         private const val BENCHMARK_FRAME_WINDOW = 10
@@ -118,6 +118,7 @@ class CameraActivity : AppCompatActivity() {
     private lateinit var interpreter: Interpreter
     private lateinit var labels: List<String>
     private var gpuDelegate: GpuDelegate? = null
+    private val byteTracker = ByteTracker()
     private var inferenceBackend = "unknown"
     private var inputDataType = DataType.FLOAT32
     private var outputDataType = DataType.FLOAT32
@@ -287,6 +288,7 @@ class CameraActivity : AppCompatActivity() {
 
             view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             resetMetrics()
+            byteTracker.reset()
             isScanning = true
             binding.btnScan.visibility = View.GONE
             binding.layoutResult.visibility = View.VISIBLE
@@ -1129,7 +1131,10 @@ class CameraActivity : AppCompatActivity() {
                                 bitmap.recycle()
                             }
 
-                            val detections = runYoloRawTflite(rotatedBitmap)
+                            val rawDetections = runYoloRawTflite(rotatedBitmap)
+                        val detections = byteTracker.update(
+                            rawDetections.map { ByteTracker.Detection(it.label, it.score, it.classId, it.box) }
+                        ).map { DetectionResult(it.label, it.score, it.classId, it.box) }
                             val frameProcessTimeMs =
                                 (SystemClock.elapsedRealtimeNanos() - frameStartNs) / 1_000_000.0
 
@@ -1868,6 +1873,7 @@ class CameraActivity : AppCompatActivity() {
             binding.layoutResult.visibility = View.GONE
             binding.btnScan.visibility = View.VISIBLE
             isScanning = false
+            byteTracker.reset()
             binding.overlayView.clear()
             tts?.stop()
         } else {
