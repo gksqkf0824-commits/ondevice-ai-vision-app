@@ -1,0 +1,4 @@
+bus_door
+bus
+kickboard
+bollard
