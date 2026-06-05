@@ -79,8 +79,8 @@ class CameraActivity : AppCompatActivity() {
         private const val OCR_ROUTE_CONFIRM_MIN_HITS = 2
 
         private const val MODEL_ASSET_NAME = "BusProject_v11n_best_int8.tflite"
-        private const val ANALYSIS_TARGET_WIDTH = 512
-        private const val ANALYSIS_TARGET_HEIGHT = 512
+        private const val ANALYSIS_TARGET_WIDTH = 320
+        private const val ANALYSIS_TARGET_HEIGHT = 320
         private const val BENCHMARK_FRAME_WINDOW = 10
         private const val PERF_FRAME_LOG_INTERVAL = 10
         private const val BENCHMARK_TARGET_FPS = 15.0
