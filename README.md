@@ -184,8 +184,8 @@ cd ondevice-ai-vision-app/mobile
 
 | 이름 | 역할 | 주요 기여 |
 |------|------|-----------|
-| 권소윤 (팀장) | PM · AI · Mobile | AI 추론 파이프라인, ByteTracker 구현, INT8 양자화, AI-모바일 통합 개발, 코드 통합 |
-| 김연철 | AI | AI 모델 학습, 온디바이스 경량화 및 양자화 |
+| 권소윤 (팀장) | PM · AI · Mobile | AI 모델 학습, AI 추론 파이프라인, ByteTracker 구현, INT8 양자화, AI-모바일 통합 개발, 코드 통합 |
+| 김연철 | AI | AI 모델 학습 및 성능 개선, 온디바이스 경량화 및 양자화 |
 | 김장섭 | Backend | Spring Boot 서버 구축, REST API 구현 |
 | 박채은 | Backend | MySQL DB 설계 및 구축, 코드 통합 |
 | 최현웅 | Mobile | 요구사항 분석, 초기 와이어프레임 제작, 실기기 테스트 |

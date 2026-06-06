@@ -78,7 +78,7 @@ class CameraActivity : AppCompatActivity() {
         private const val OCR_ROUTE_CONFIRM_WINDOW_MS = 4500L
         private const val OCR_ROUTE_CONFIRM_MIN_HITS = 2
 
-        private const val MODEL_ASSET_NAME = "BusProject_v11n_best_int8.tflite"
+        private const val MODEL_ASSET_NAME = "improved_model_320_full_int8.tflite"
         private const val ANALYSIS_TARGET_WIDTH = 320
         private const val ANALYSIS_TARGET_HEIGHT = 320
         private const val BENCHMARK_FRAME_WINDOW = 10
@@ -164,8 +164,8 @@ class CameraActivity : AppCompatActivity() {
     private var pendingRouteHits = 0
     private var pendingRouteTimestampMs = 0L
 
-    private var modelInputSize = 640
-    private var candidateCount = 8400
+    private var modelInputSize = 320
+    private var candidateCount = 2100
     private val scoreThreshold = 0.4f
     private val bollardScoreThreshold = 0.3f
     private val iouThreshold = 0.45f
