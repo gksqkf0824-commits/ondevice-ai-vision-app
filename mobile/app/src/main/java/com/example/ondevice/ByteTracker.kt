@@ -17,7 +17,7 @@ import kotlin.math.min
  * so brief misses don't cause visible flicker.
  */
 class ByteTracker(
-    private val maxLostFrames: Int = 7,
+    private val maxLostFrames: Int = 1,
     private val carryOverFrames: Int = 1,
     private val highScoreThresh: Float = 0.45f,
     private val matchIouThresh: Float = 0.3f,

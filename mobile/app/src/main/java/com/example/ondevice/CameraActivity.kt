@@ -92,7 +92,7 @@ class CameraActivity : AppCompatActivity() {
 
         // --- 버스문 오탐 감소용 휴리스틱(코드 레벨 보완) ---
         // bus bbox 안에 충분히 포함되는 door만 유지 (intersection / doorArea)
-        private const val DOOR_MIN_IOA_WITH_BUS = 0.20f
+        private const val DOOR_MIN_IOA_WITH_BUS = 0.05f
         // bus bbox 대비 door bbox 면적 비율 범위
         private const val DOOR_MIN_AREA_RATIO_TO_BUS = 0.003f
         private const val DOOR_MAX_AREA_RATIO_TO_BUS = 0.40f
@@ -103,8 +103,8 @@ class CameraActivity : AppCompatActivity() {
         private const val BUS_MIN_AREA_RATIO = 0.04f
         private const val BUS_MIN_ASPECT_RATIO = 0.70f
         private const val BUS_MAX_ASPECT_RATIO = 4.50f
-        private const val DOOR_MODEL_SCORE_THRESHOLD = 0.18f
-        private const val DOOR_MIN_SCORE = 0.22f
+        private const val DOOR_MODEL_SCORE_THRESHOLD = 0.10f
+        private const val DOOR_MIN_SCORE = 0.10f
 
         // 앞문 선택 스무딩(짧은 시간 내 선택 유지)
         private const val FRONT_DOOR_SMOOTHING_WINDOW_MS = 1400L
@@ -150,6 +150,7 @@ class CameraActivity : AppCompatActivity() {
     private var lockedFrontDoorBox: RectF? = null
     private var lockedFrontDoorIsEstimate = false
     private var lockedRouteNumber: String? = null
+    private var lockedBusBbox: RectF? = null
     private var lastFrameTimestampMs = 0L
     private var processedFrameCount = 0
     private var fpsSum = 0.0
@@ -440,6 +441,7 @@ class CameraActivity : AppCompatActivity() {
         lockedFrontDoorBox = null
         lockedFrontDoorIsEstimate = false
         lockedRouteNumber = null
+        lockedBusBbox = null
     }
 
 
@@ -867,30 +869,23 @@ class CameraActivity : AppCompatActivity() {
         val busCy = busBox.centerY()
 
         val filtered = doors.filter { door ->
-            if (door.score < DOOR_MIN_SCORE) return@filter false
-
             val d = door.box
-            // 화면 밖으로 많이 나간 박스 제거(잡음 방지)
-            if (d.left < -imageWidth * 0.05f || d.top < -imageHeight * 0.05f ||
-                d.right > imageWidth * 1.05f || d.bottom > imageHeight * 1.05f
-            ) return@filter false
-
-            // bus bbox 안에 어느 정도 포함되는지 (intersection / doorArea)
             val ioa = calculateIoA(d, busBox)
-            if (ioa < DOOR_MIN_IOA_WITH_BUS) return@filter false
-
-            // bus bbox 대비 면적 비율
             val areaRatio = rectArea(d) / busArea
-            if (areaRatio < DOOR_MIN_AREA_RATIO_TO_BUS || areaRatio > DOOR_MAX_AREA_RATIO_TO_BUS) return@filter false
-
-            // 종횡비(문은 보통 너무 극단적으로 길쭉하지 않음)
             val aspect = d.width() / max(1f, d.height())
-            if (aspect < DOOR_MIN_ASPECT_RATIO || aspect > DOOR_MAX_ASPECT_RATIO) return@filter false
-
-            // bus 중심과 너무 동떨어진 도어는 제거(전혀 관계 없는 오탐 방지)
             val dx = kotlin.math.abs(d.centerX() - busCx) / max(1f, busBox.width())
             val dy = kotlin.math.abs(d.centerY() - busCy) / max(1f, busBox.height())
-            if (dx > 0.9f || dy > 0.9f) return@filter false
+            Log.i(METRIC_TAG, "DOOR_FILTER score=${fmt(door.score.toDouble())} ioa=${fmt(ioa.toDouble())} " +
+                "areaRatio=${fmt(areaRatio.toDouble())} aspect=${fmt(aspect.toDouble())} dx=${fmt(dx.toDouble())} dy=${fmt(dy.toDouble())}")
+
+            if (door.score < DOOR_MIN_SCORE) { Log.i(METRIC_TAG, "DOOR_REJECT: score"); return@filter false }
+            if (d.left < -imageWidth * 0.05f || d.top < -imageHeight * 0.05f ||
+                d.right > imageWidth * 1.05f || d.bottom > imageHeight * 1.05f
+            ) { Log.i(METRIC_TAG, "DOOR_REJECT: boundary"); return@filter false }
+            if (ioa < DOOR_MIN_IOA_WITH_BUS) { Log.i(METRIC_TAG, "DOOR_REJECT: ioa"); return@filter false }
+            if (areaRatio < DOOR_MIN_AREA_RATIO_TO_BUS || areaRatio > DOOR_MAX_AREA_RATIO_TO_BUS) { Log.i(METRIC_TAG, "DOOR_REJECT: areaRatio"); return@filter false }
+            if (aspect < DOOR_MIN_ASPECT_RATIO || aspect > DOOR_MAX_ASPECT_RATIO) { Log.i(METRIC_TAG, "DOOR_REJECT: aspect"); return@filter false }
+            if (dx > 0.9f || dy > 0.9f) { Log.i(METRIC_TAG, "DOOR_REJECT: distance"); return@filter false }
 
             true
         }
@@ -989,6 +984,7 @@ class CameraActivity : AppCompatActivity() {
             Log.w(TAG, "TTS skipped ready=$isTtsReady textBlank=${text.isBlank()}")
             return
         }
+        if (tts?.isSpeaking == true) return
 
         tts?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "")
     }
@@ -1273,13 +1269,27 @@ class CameraActivity : AppCompatActivity() {
         if (category.equals("bus", true)) {
             // 버스 번호가 이미 확정됐으면 OCR 재실행 없이 잠긴 결과를 그대로 표시
             if (isBusNumberLocked) {
+                // 잠긴 버스와 현재 버스 bbox의 IoU가 낮으면 다른 버스 → 잠금 해제
+                val prevBbox = lockedBusBbox
+                if (prevBbox != null) {
+                    val inter = intersectionArea(bbox, prevBbox)
+                    val union = rectArea(bbox) + rectArea(prevBbox) - inter
+                    val iou = if (union > 0f) inter / union else 0f
+                    if (iou < 0.2f) {
+                        resetBusLock()
+                        // 잠금 해제 후 아래 일반 탐지 흐름으로 fall-through
+                    }
+                }
+            }
+            if (isBusNumberLocked) {
                 val doorBox = lockedFrontDoorBox
                 val frontDoorDirection = doorBox?.let { getDirectionFromBox(it, rotatedBitmap.width.toFloat()) }
                 val descText = when {
                     !targetBusNumber.isNullOrBlank() ->
                         "(TTS) $targetBusNumber 번, 타겟 버스가 감지되었습니다." +
                             (frontDoorDirection?.let { " 앞문은 $it 방향입니다." } ?: "")
-                    lockedRouteNumber != null -> "${lockedRouteNumber}번 버스가 감지되었습니다."
+                    lockedRouteNumber != null -> "${lockedRouteNumber}번 버스가 감지되었습니다." +
+                        (frontDoorDirection?.let { " 앞문은 $it 방향입니다." } ?: "")
                     else -> "전방 $direction 방향에 버스가 감지되었습니다."
                 }
                 val overlayColor = if (!targetBusNumber.isNullOrBlank()) Color.MAGENTA else Color.GREEN
@@ -1322,7 +1332,27 @@ class CameraActivity : AppCompatActivity() {
             val shouldRunOcr =
                 busAreaRatio >= BUS_OCR_AREA_RATIO_THRESHOLD
 
+            // 버스문이 감지되면 버스 박스와 함께 별도 색으로 동시 표시 (TTS는 번호 확정 후에만)
+            val realtimeDoor = filteredDoors.maxByOrNull { it.score }
+            if (realtimeDoor != null) {
+                val doorMappedBox = mapBoxToPreview(realtimeDoor.box, rotatedBitmap)
+                val doorDir = getDirectionFromBox(realtimeDoor.box, rotatedBitmap.width.toFloat())
+                runOnUiThread {
+                    binding.overlayView.setBoxesInfo(listOf(
+                        OverlayView.BoxInfo(mappedBox, Color.GREEN, "bus ($score%)"),
+                        OverlayView.BoxInfo(doorMappedBox, Color.CYAN, "버스문 (${(realtimeDoor.score * 100).toInt()}%)")
+                    ))
+                    binding.tvResultDesc.text = "버스와 앞문이 감지되었습니다. 앞문은 $doorDir 방향입니다."
+                }
+            }
+
             if (shouldRunOcr) {
+                // 문 미감지 시에도 현재 프레임 버스 위치로 overlay 갱신 (OCR 처리 중 잔상 방지)
+                if (realtimeDoor == null) {
+                    runOnUiThread {
+                        binding.overlayView.setBoxInfo(mappedBox, Color.GREEN, "bus ($score%)")
+                    }
+                }
                 handleBusOcr(
                     category = category,
                     score = score,
@@ -1337,11 +1367,9 @@ class CameraActivity : AppCompatActivity() {
                 val descText = "전방 $direction 방향에 버스가 감지되었습니다. 번호판 인식을 위해 조금 더 가까이 이동하세요."
 
                 runOnUiThread {
-                    binding.overlayView.setBoxInfo(
-                        mappedBox,
-                        Color.GREEN,
-                        "bus ($score%)"
-                    )
+                    if (realtimeDoor == null) {
+                        binding.overlayView.setBoxInfo(mappedBox, Color.GREEN, "bus ($score%)")
+                    }
                     binding.tvResultDesc.text = descText
                 }
 
@@ -1532,6 +1560,7 @@ class CameraActivity : AppCompatActivity() {
                         // 번호를 처음 확인한 시점에 잠금 — 이후 OCR 재실행 안 함
                         isBusNumberLocked = true
                         lockedRouteNumber = routeCandidate.number
+                        lockedBusBbox = RectF(bbox)
                     }
                     val descText = if (routeCandidate != null) {
                         "${routeCandidate.number}번 버스가 감지되었습니다."
@@ -1577,6 +1606,7 @@ class CameraActivity : AppCompatActivity() {
                     isBusNumberLocked = true
                     lockedFrontDoorBox = RectF(frontDoorBox)
                     lockedFrontDoorIsEstimate = (frontDoor == null)
+                    lockedBusBbox = RectF(bbox)
 
                     Log.i(
                         METRIC_TAG,
