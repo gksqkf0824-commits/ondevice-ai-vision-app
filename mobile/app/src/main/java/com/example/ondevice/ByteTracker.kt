@@ -17,12 +17,12 @@ import kotlin.math.min
  * so brief misses don't cause visible flicker.
  */
 class ByteTracker(
-    private val maxLostFrames: Int = 1,
-    private val carryOverFrames: Int = 1,
+    private val maxLostFrames: Int = 3,
+    private val carryOverFrames: Int = 3,
     private val highScoreThresh: Float = 0.45f,
     private val matchIouThresh: Float = 0.3f,
     private val secondMatchIouThresh: Float = 0.4f,
-    private val smoothAlpha: Float = 0.85f
+    private val smoothAlpha: Float = 0.5f
 ) {
     data class Detection(
         val label: String,
@@ -73,6 +73,11 @@ class ByteTracker(
             activeTracks.add(track)
         }
         lostTracks.removeAll { t -> m3.any { (recovered, _) -> recovered.trackId == t.trackId } }
+
+        // Increment lostFrames for all tracks that remain lost this frame
+        for (track in lostTracks) {
+            track.lostFrames++
+        }
 
         // Move unmatched active tracks to lost
         for (track in unmatched2) {

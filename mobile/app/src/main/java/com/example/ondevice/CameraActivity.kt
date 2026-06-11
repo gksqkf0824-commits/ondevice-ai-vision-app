@@ -77,6 +77,8 @@ class CameraActivity : AppCompatActivity() {
         private const val OCR_MAX_UPSCALE = 3.0f
         private const val OCR_ROUTE_CONFIRM_WINDOW_MS = 4500L
         private const val OCR_ROUTE_CONFIRM_MIN_HITS = 2
+        private const val OCR_NO_TARGET_CONFIRM_WINDOW_MS = 8000L
+        private const val OCR_NO_TARGET_CONFIRM_MIN_HITS = 2
 
         private const val MODEL_ASSET_NAME = "improved_model_320_full_int8.tflite"
         private const val ANALYSIS_TARGET_WIDTH = 320
@@ -109,6 +111,10 @@ class CameraActivity : AppCompatActivity() {
         // 앞문 선택 스무딩(짧은 시간 내 선택 유지)
         private const val FRONT_DOOR_SMOOTHING_WINDOW_MS = 1400L
         private const val FRONT_DOOR_SMOOTHING_MIN_IOU = 0.30f
+
+        // 실시간 버스문 표시 스무딩
+        private const val REALTIME_DOOR_CARRY_MS = 500L   // 미감지 후 이 시간까지 마지막 위치 유지
+        private const val REALTIME_DOOR_EMA_ALPHA = 0.45f // 위치 블렌딩 강도 (낮을수록 더 부드럽게)
     }
 
     private lateinit var binding: ActivityCameraBinding
@@ -146,6 +152,8 @@ class CameraActivity : AppCompatActivity() {
     private var lastOcrModeAnalysisTimestampMs = 0L
     private var lastFrontDoorBox: RectF? = null
     private var lastFrontDoorChosenTimestampMs = 0L
+    private var smoothedRealtimeDoorBox: RectF? = null
+    private var lastRealtimeDoorSeenMs = 0L
     @Volatile private var isBusNumberLocked = false
     private var lockedFrontDoorBox: RectF? = null
     private var lockedFrontDoorIsEstimate = false
@@ -168,6 +176,9 @@ class CameraActivity : AppCompatActivity() {
     private var pendingRouteNumber: String? = null
     private var pendingRouteHits = 0
     private var pendingRouteTimestampMs = 0L
+    private var pendingNoTargetRoute: String? = null
+    private var pendingNoTargetHits = 0
+    private var pendingNoTargetTimestampMs = 0L
 
     private var modelInputSize = 320
     private var candidateCount = 2100
@@ -427,6 +438,9 @@ class CameraActivity : AppCompatActivity() {
         pendingRouteNumber = null
         pendingRouteHits = 0
         pendingRouteTimestampMs = 0L
+        pendingNoTargetRoute = null
+        pendingNoTargetHits = 0
+        pendingNoTargetTimestampMs = 0L
         isBusNumberLocked = false
         resetBusLock()
         lastFrontDoorBox = null
@@ -442,6 +456,16 @@ class CameraActivity : AppCompatActivity() {
         lockedFrontDoorIsEstimate = false
         lockedRouteNumber = null
         lockedBusBbox = null
+        pendingRouteNumber = null
+        pendingRouteHits = 0
+        pendingRouteTimestampMs = 0L
+        pendingNoTargetRoute = null
+        pendingNoTargetHits = 0
+        pendingNoTargetTimestampMs = 0L
+        lastFrontDoorBox = null
+        lastFrontDoorChosenTimestampMs = 0L
+        smoothedRealtimeDoorBox = null
+        lastRealtimeDoorSeenMs = 0L
     }
 
 
@@ -1145,7 +1169,8 @@ class CameraActivity : AppCompatActivity() {
 
                             val rawDetections = runYoloRawTflite(rotatedBitmap)
                             // 볼라드/킥보드는 정적·소형 객체로 트래킹 잔상이 불필요 — raw detection만 사용
-                            val noTrackLabels = setOf("bollard", "kickboard")
+                            // bus_door는 점수가 낮아 ByteTracker에서 새 트랙이 생성되지 않으므로 raw detection 사용
+                            val noTrackLabels = setOf("bollard", "kickboard", "bus_door")
                             val forTracking = rawDetections.filter { it.label.lowercase(Locale.US) !in noTrackLabels }
                             val skipTracking = rawDetections.filter { it.label.lowercase(Locale.US) in noTrackLabels }
                             val trackedDetections = byteTracker.update(
@@ -1296,6 +1321,7 @@ class CameraActivity : AppCompatActivity() {
                 val overlayLabel = when {
                     !targetBusNumber.isNullOrBlank() ->
                         if (!lockedFrontDoorIsEstimate) "앞문 (${targetBusNumber}번)" else "앞문 추정 (${targetBusNumber}번)"
+                    lockedRouteNumber != null && lockedFrontDoorBox != null -> "앞문 (${lockedRouteNumber}번)"
                     lockedRouteNumber != null -> "버스 ${lockedRouteNumber}번"
                     else -> "bus ($score%)"
                 }
@@ -1332,23 +1358,42 @@ class CameraActivity : AppCompatActivity() {
             val shouldRunOcr =
                 busAreaRatio >= BUS_OCR_AREA_RATIO_THRESHOLD
 
-            // 버스문이 감지되면 버스 박스와 함께 별도 색으로 동시 표시 (TTS는 번호 확정 후에만)
-            val realtimeDoor = filteredDoors.maxByOrNull { it.score }
-            if (realtimeDoor != null) {
-                val doorMappedBox = mapBoxToPreview(realtimeDoor.box, rotatedBitmap)
-                val doorDir = getDirectionFromBox(realtimeDoor.box, rotatedBitmap.width.toFloat())
+            // 실시간 버스문: EMA 위치 스무딩 + carry-over로 깜빡임 방지
+            val nowMs = SystemClock.elapsedRealtime()
+            val rawDoor = filteredDoors.maxByOrNull { it.score }
+            if (rawDoor != null) {
+                val prev = smoothedRealtimeDoorBox
+                smoothedRealtimeDoorBox = if (prev == null) {
+                    RectF(rawDoor.box)
+                } else {
+                    val a = REALTIME_DOOR_EMA_ALPHA
+                    RectF(
+                        prev.left + a * (rawDoor.box.left - prev.left),
+                        prev.top + a * (rawDoor.box.top - prev.top),
+                        prev.right + a * (rawDoor.box.right - prev.right),
+                        prev.bottom + a * (rawDoor.box.bottom - prev.bottom)
+                    )
+                }
+                lastRealtimeDoorSeenMs = nowMs
+            } else if (nowMs - lastRealtimeDoorSeenMs > REALTIME_DOOR_CARRY_MS) {
+                smoothedRealtimeDoorBox = null
+            }
+            val smoothedDoor = smoothedRealtimeDoorBox
+
+            if (smoothedDoor != null) {
+                val doorMappedBox = mapBoxToPreview(smoothedDoor, rotatedBitmap)
+                // 번호를 모르는 상태에서 문 방향을 텍스트/TTS로 알리지 않음 — 시각적 오버레이만 표시
                 runOnUiThread {
                     binding.overlayView.setBoxesInfo(listOf(
                         OverlayView.BoxInfo(mappedBox, Color.GREEN, "bus ($score%)"),
-                        OverlayView.BoxInfo(doorMappedBox, Color.CYAN, "버스문 (${(realtimeDoor.score * 100).toInt()}%)")
+                        OverlayView.BoxInfo(doorMappedBox, Color.CYAN, "버스문")
                     ))
-                    binding.tvResultDesc.text = "버스와 앞문이 감지되었습니다. 앞문은 $doorDir 방향입니다."
                 }
             }
 
             if (shouldRunOcr) {
                 // 문 미감지 시에도 현재 프레임 버스 위치로 overlay 갱신 (OCR 처리 중 잔상 방지)
-                if (realtimeDoor == null) {
+                if (smoothedDoor == null) {
                     runOnUiThread {
                         binding.overlayView.setBoxInfo(mappedBox, Color.GREEN, "bus ($score%)")
                     }
@@ -1367,7 +1412,7 @@ class CameraActivity : AppCompatActivity() {
                 val descText = "전방 $direction 방향에 버스가 감지되었습니다. 번호판 인식을 위해 조금 더 가까이 이동하세요."
 
                 runOnUiThread {
-                    if (realtimeDoor == null) {
+                    if (smoothedDoor == null) {
                         binding.overlayView.setBoxInfo(mappedBox, Color.GREEN, "bus ($score%)")
                     }
                     binding.tvResultDesc.text = descText
@@ -1556,18 +1601,33 @@ class CameraActivity : AppCompatActivity() {
                 )
 
                 if (targetBusNumber.isNullOrBlank()) {
-                    if (routeCandidate != null) {
-                        // 번호를 처음 확인한 시점에 잠금 — 이후 OCR 재실행 안 함
-                        isBusNumberLocked = true
-                        lockedRouteNumber = routeCandidate.number
+                    // 동일 번호가 연속 2회 이상 인식돼야 잠금 (OCR 오탐 방지)
+                    val confirmedRoute = if (routeCandidate != null &&
+                        updateNoTargetRouteConfirmation(routeCandidate.number)) {
+                        routeCandidate.number
+                    } else null
+                    if (confirmedRoute != null) {
+                        // 잠금 시 앞문 후보도 함께 저장 (잠금 후 locked state에서 표시)
+                        val bestDoor = doors.maxByOrNull { it.score }
+                        lockedFrontDoorBox = bestDoor?.let { RectF(it.box) }
+                        lockedFrontDoorIsEstimate = false
+                        lockedRouteNumber = confirmedRoute
                         lockedBusBbox = RectF(bbox)
+                        isBusNumberLocked = true
                     }
-                    val descText = if (routeCandidate != null) {
-                        "${routeCandidate.number}번 버스가 감지되었습니다."
-                    } else {
-                        "전방 $direction 방향에 버스가 감지되었습니다."
+                    val doorDirection = if (confirmedRoute != null) {
+                        doors.maxByOrNull { it.score }
+                            ?.let { getDirectionFromBox(it.box, rotatedBitmap.width.toFloat()) }
+                    } else null
+                    val descText = when {
+                        confirmedRoute != null && doorDirection != null ->
+                            "${confirmedRoute}번 버스입니다. 앞문은 $doorDirection 방향입니다."
+                        confirmedRoute != null ->
+                            "${confirmedRoute}번 버스입니다."
+                        else ->
+                            "전방 $direction 방향에 버스가 감지되었습니다."
                     }
-                    val overlayLabel = routeCandidate?.number?.let { "버스 ${it}번" } ?: "bus ($score%)"
+                    val overlayLabel = confirmedRoute?.let { "버스 ${it}번" } ?: "bus ($score%)"
 
                     runOnUiThread {
                         binding.overlayView.setBoxInfo(
@@ -1582,7 +1642,7 @@ class CameraActivity : AppCompatActivity() {
                     if (currentTimestamp - lastSavedTimestamp >= 5000) {
                         lastSavedTimestamp = currentTimestamp
                         speakOut(descText)
-                        saveToDatabase(routeCandidate?.number?.let { "버스 감지 ($it)" } ?: category)
+                        saveToDatabase(confirmedRoute?.let { "버스 감지 ($it)" } ?: category)
                     }
                 } else if (isRouteConfirmed) {
                     val plateBox = targetTextBox ?: return@addOnSuccessListener
@@ -1602,11 +1662,11 @@ class CameraActivity : AppCompatActivity() {
 
                     val frontDoorDirection = getDirectionFromBox(frontDoorBox, rotatedBitmap.width.toFloat())
 
-                    // 타겟 버스 번호 확정 — 이후 OCR 재실행 안 함
-                    isBusNumberLocked = true
+                    // 타겟 버스 번호 확정 — isBusNumberLocked은 관련 필드 모두 설정 후 마지막에 씀
                     lockedFrontDoorBox = RectF(frontDoorBox)
                     lockedFrontDoorIsEstimate = (frontDoor == null)
                     lockedBusBbox = RectF(bbox)
+                    isBusNumberLocked = true
 
                     Log.i(
                         METRIC_TAG,
@@ -1746,6 +1806,21 @@ class CameraActivity : AppCompatActivity() {
         return normalizeOcrText(text).filter { it.isDigit() }
     }
 
+    private fun updateNoTargetRouteConfirmation(routeNumber: String): Boolean {
+        val nowMs = SystemClock.elapsedRealtime()
+        val isSameWindow = pendingNoTargetRoute == routeNumber &&
+            nowMs - pendingNoTargetTimestampMs <= OCR_NO_TARGET_CONFIRM_WINDOW_MS
+        if (isSameWindow) {
+            pendingNoTargetHits += 1
+        } else {
+            pendingNoTargetRoute = routeNumber
+            pendingNoTargetHits = 1
+        }
+        pendingNoTargetTimestampMs = nowMs
+        Log.i(METRIC_TAG, "OCR_NO_TARGET_CONFIRM route=$routeNumber hits=$pendingNoTargetHits")
+        return pendingNoTargetHits >= OCR_NO_TARGET_CONFIRM_MIN_HITS
+    }
+
     private fun updateRouteConfirmation(targetBusNumber: String): Boolean {
         val normalizedTarget = normalizeOcrDigits(targetBusNumber)
         if (normalizedTarget.isBlank()) return false
@@ -1782,11 +1857,7 @@ class CameraActivity : AppCompatActivity() {
             return false
         }
 
-        val isTargetMatched = if (targetDigits.length == 1) {
-            routeCandidate == targetDigits
-        } else {
-            routeCandidate.contains(targetDigits)
-        }
+        val isTargetMatched = routeCandidate == targetDigits
         if (!isTargetMatched) {
             return false
         }
