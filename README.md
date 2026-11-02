@@ -197,8 +197,4 @@ cd ondevice-ai-vision-app/mobile
 | 이주호 | Mobile | 초기 Android UX/UI 및 앱 로직 개발 |
 | 오현민 | Docs | 논문 작성 및 최종 보고서 |
 
----
 
-## License
-
-MIT
